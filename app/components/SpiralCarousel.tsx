@@ -57,6 +57,20 @@ const FADE_END = 4.7; // ...and where they are gone, hiding the loop point
 const REVEAL_EASING = 0.055;
 const REVEAL_STAGGER = 0.05; // seconds between each card's entrance
 
+/* ── Fullscreen ────────────────────────────────────────────────────────────
+ * A tap grows the card from its exact on-screen rect into a real
+ * <video controls> element — a lightbox, not a modal bolted on top. The
+ * card's mesh hides the instant the clone appears in its place, so the
+ * handoff reads as one continuous shape rather than a swap.
+ */
+const OPEN_MS = 600;
+const CLOSE_MS = 480;
+const SWAP_MS = 150; // crossfade between the curled mesh and the flat player
+const CLOSE_FADE_LEAD_MS = 120; // finish the close fade this long before the shrink stops moving
+const HIDE_EASING = 0.25; // per-frame pull toward the crossfade target
+const CLICK_MOVE_THRESHOLD = 6; // px of drag before a tap stops counting as a click
+const CLICK_TIME_THRESHOLD = 350; // ms
+
 const vertexShader = /* glsl */ `
   #define PI 3.14159265359
 
@@ -176,6 +190,7 @@ type Card = {
   delay: number;
   reveal: number;
   hover: number;
+  hiding: number;
 };
 
 export default function SpiralCarousel() {
@@ -255,6 +270,7 @@ export default function SpiralCarousel() {
         delay: (i % 4) * REVEAL_STAGGER,
         reveal: 0,
         hover: 0,
+        hiding: 0,
       });
     }
     const meshes = cards.map((c) => c.mesh);
@@ -262,6 +278,149 @@ export default function SpiralCarousel() {
     const onMeta = () => imageSizes.set(video.videoWidth, video.videoHeight);
     video.addEventListener("loadedmetadata", onMeta);
     if (video.videoWidth) onMeta();
+
+    /* ── Fullscreen lightbox ──────────────────────────────────────────────── */
+    const backdrop = document.createElement("div");
+    backdrop.style.cssText =
+      "position:fixed;inset:0;z-index:40;background:rgba(0,0,0,0);display:none;transition:background-color 0.5s ease;";
+    const fsVideo = document.createElement("video");
+    fsVideo.src = "/rick.mp4";
+    fsVideo.controls = true;
+    fsVideo.playsInline = true;
+    fsVideo.style.cssText =
+      "position:fixed;z-index:41;display:none;object-fit:cover;border-radius:14px;box-shadow:0 30px 80px rgba(0,0,0,0.6);outline:none;";
+    const closeBtn = document.createElement("button");
+    closeBtn.setAttribute("aria-label", "Close video");
+    closeBtn.textContent = "✕";
+    closeBtn.style.cssText =
+      "position:fixed;top:20px;right:20px;z-index:42;width:40px;height:40px;border-radius:9999px;border:none;background:rgba(20,20,20,0.6);color:#fff;font-size:16px;line-height:1;cursor:pointer;opacity:0;pointer-events:none;transition:opacity 0.3s ease;";
+    document.body.appendChild(backdrop);
+    document.body.appendChild(fsVideo);
+    document.body.appendChild(closeBtn);
+
+    const cardScreenRect = (mesh: THREE.Mesh) => {
+      const canvasRect = canvas.getBoundingClientRect();
+      const hw = CARD_W / 2;
+      const hh = CARD_H / 2;
+      let minX = Infinity,
+        minY = Infinity,
+        maxX = -Infinity,
+        maxY = -Infinity;
+      const corner = new THREE.Vector3();
+      for (const [cx, cy] of [
+        [-hw, -hh],
+        [hw, -hh],
+        [-hw, hh],
+        [hw, hh],
+      ]) {
+        corner.set(cx, cy, 0).applyMatrix4(mesh.matrixWorld).project(camera);
+        const px = (corner.x * 0.5 + 0.5) * canvasRect.width + canvasRect.left;
+        const py =
+          (1 - (corner.y * 0.5 + 0.5)) * canvasRect.height + canvasRect.top;
+        minX = Math.min(minX, px);
+        maxX = Math.max(maxX, px);
+        minY = Math.min(minY, py);
+        maxY = Math.max(maxY, py);
+      }
+      return { left: minX, top: minY, width: maxX - minX, height: maxY - minY };
+    };
+
+    const fullscreenRect = () => {
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const aspect = imageSizes.x / imageSizes.y || 16 / 9;
+      let width = vh * aspect;
+      let height = vh;
+      if (width > vw) {
+        width = vw;
+        height = vw / aspect;
+      }
+      return { left: (vw - width) / 2, top: (vh - height) / 2, width, height };
+    };
+
+    const applyRect = (
+      rect: { left: number; top: number; width: number; height: number },
+      radius: string,
+    ) => {
+      fsVideo.style.left = `${rect.left}px`;
+      fsVideo.style.top = `${rect.top}px`;
+      fsVideo.style.width = `${rect.width}px`;
+      fsVideo.style.height = `${rect.height}px`;
+      fsVideo.style.borderRadius = radius;
+    };
+
+    let openCard: Card | null = null;
+    let mediaOpacity = 0; // crossfade target for fsVideo; the mesh fades to match
+
+    const openVideo = (card: Card) => {
+      if (openCard) return;
+      openCard = card;
+      mediaOpacity = 1;
+      frozen = true;
+
+      fsVideo.style.transition = "none";
+      applyRect(cardScreenRect(card.mesh), "14px");
+      fsVideo.style.opacity = "0";
+      backdrop.style.display = "block";
+      fsVideo.style.display = "block";
+      closeBtn.style.display = "block";
+      backdrop.style.pointerEvents = "auto";
+      fsVideo.style.pointerEvents = "auto";
+
+      fsVideo.currentTime = video.currentTime;
+      fsVideo.muted = false;
+      void fsVideo.play().catch(() => {});
+
+      // Force layout so the browser commits the start rect before it
+      // transitions to the end rect, instead of collapsing both into one.
+      fsVideo.getBoundingClientRect();
+      requestAnimationFrame(() => {
+        fsVideo.style.transition = `opacity ${SWAP_MS}ms ease, left ${OPEN_MS}ms cubic-bezier(0.22,1,0.36,1), top ${OPEN_MS}ms cubic-bezier(0.22,1,0.36,1), width ${OPEN_MS}ms cubic-bezier(0.22,1,0.36,1), height ${OPEN_MS}ms cubic-bezier(0.22,1,0.36,1), border-radius ${OPEN_MS}ms ease`;
+        applyRect(fullscreenRect(), "0px");
+        fsVideo.style.opacity = "1";
+        backdrop.style.background = "rgba(0,0,0,0.92)";
+        closeBtn.style.opacity = "1";
+        closeBtn.style.pointerEvents = "auto";
+      });
+    };
+
+    const closeVideo = () => {
+      const card = openCard;
+      if (!card) return;
+      mediaOpacity = 0;
+
+      // The shrink itself must stay visible, so the opacity crossfade is
+      // deferred until near the end — and finishes with room to spare
+      // before the motion stops, so nothing pops at the moment it settles.
+      const fadeDelay = CLOSE_MS - SWAP_MS - CLOSE_FADE_LEAD_MS;
+      fsVideo.style.transition = `opacity ${SWAP_MS}ms ease ${fadeDelay}ms, left ${CLOSE_MS}ms cubic-bezier(0.4,0,0.2,1), top ${CLOSE_MS}ms cubic-bezier(0.4,0,0.2,1), width ${CLOSE_MS}ms cubic-bezier(0.4,0,0.2,1), height ${CLOSE_MS}ms cubic-bezier(0.4,0,0.2,1), border-radius ${CLOSE_MS}ms ease`;
+      applyRect(cardScreenRect(card.mesh), "14px");
+      fsVideo.style.opacity = "0";
+      backdrop.style.background = "rgba(0,0,0,0)";
+      backdrop.style.pointerEvents = "none";
+      fsVideo.style.pointerEvents = "none";
+      closeBtn.style.opacity = "0";
+      closeBtn.style.pointerEvents = "none";
+
+      video.currentTime = fsVideo.currentTime;
+      fsVideo.muted = true;
+
+      window.setTimeout(() => {
+        fsVideo.pause();
+        fsVideo.style.display = "none";
+        backdrop.style.display = "none";
+        closeBtn.style.display = "none";
+        openCard = null;
+        frozen = false;
+      }, CLOSE_MS);
+    };
+
+    closeBtn.addEventListener("click", closeVideo);
+    backdrop.addEventListener("click", closeVideo);
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeVideo();
+    };
+    window.addEventListener("keydown", onKeyDown);
 
     /* ── Sizing ───────────────────────────────────────────────────────────── */
     const resize = () => {
@@ -272,6 +431,9 @@ export default function SpiralCarousel() {
       camera.aspect = w / h;
       camera.fov = w < 900 ? 45 : 35;
       camera.updateProjectionMatrix();
+      // Keep the open player filling the viewport through a resize; snap
+      // rather than transition since this isn't a user-driven open/close.
+      if (openCard) applyRect(fullscreenRect(), "0px");
     };
     const observer = new ResizeObserver(resize);
     observer.observe(host);
@@ -283,7 +445,11 @@ export default function SpiralCarousel() {
     let targetSpeed = 0;
     let direction = 1;
     let dragging = false;
+    let frozen = false; // true while the lightbox is open or animating
     let lastPointerY = 0;
+    let downX = 0;
+    let downY = 0;
+    let downTime = 0;
     const pointer = new THREE.Vector2(2, 2); // parked off-screen until a move
 
     const push = (delta: number) => {
@@ -306,6 +472,9 @@ export default function SpiralCarousel() {
       dragging = true;
       // The spiral climbs, so a vertical drag is the one that reads.
       lastPointerY = e.clientY;
+      downX = e.clientX;
+      downY = e.clientY;
+      downTime = performance.now();
       canvas.setPointerCapture(e.pointerId);
     };
     const onPointerMove = (e: PointerEvent) => {
@@ -323,6 +492,20 @@ export default function SpiralCarousel() {
       dragging = false;
       if (canvas.hasPointerCapture(e.pointerId))
         canvas.releasePointerCapture(e.pointerId);
+
+      const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
+      const held = performance.now() - downTime;
+      if (moved < CLICK_MOVE_THRESHOLD && held < CLICK_TIME_THRESHOLD) {
+        const rect = canvas.getBoundingClientRect();
+        pointer.set(
+          ((e.clientX - rect.left) / rect.width) * 2 - 1,
+          -((e.clientY - rect.top) / rect.height) * 2 + 1,
+        );
+        raycaster.setFromCamera(pointer, camera);
+        const hit = raycaster.intersectObjects(meshes)[0]?.object;
+        const card = cards.find((c) => c.mesh === hit);
+        if (card) openVideo(card);
+      }
     };
     const onPointerLeave = () => pointer.set(2, 2);
 
@@ -346,17 +529,19 @@ export default function SpiralCarousel() {
       const step = dt * 60;
       elapsed += dt;
 
-      speed += (targetSpeed - speed) * (1 - Math.pow(1 - EASING, step));
-      offset += speed * step;
-      if (Math.abs(targetSpeed) < IDLE_SPEED)
-        targetSpeed = direction * IDLE_SPEED;
-      targetSpeed *= Math.pow(DECAY, step);
+      if (!frozen) {
+        speed += (targetSpeed - speed) * (1 - Math.pow(1 - EASING, step));
+        offset += speed * step;
+        if (Math.abs(targetSpeed) < IDLE_SPEED)
+          targetSpeed = direction * IDLE_SPEED;
+        targetSpeed *= Math.pow(DECAY, step);
+      }
 
       // The helix moves under a still pointer, so this has to re-run every
       // frame; it stays cheap because three rejects most meshes on their
       // bounding sphere before touching a triangle.
       raycaster.setFromCamera(pointer, camera);
-      const hovered = dragging
+      const hovered = dragging || frozen
         ? undefined
         : raycaster.intersectObjects(meshes)[0]?.object;
       canvas.style.cursor = dragging
@@ -376,6 +561,9 @@ export default function SpiralCarousel() {
         card.hover +=
           ((mesh === hovered ? 1 : 0) - card.hover) *
           (1 - Math.pow(1 - 0.09, step));
+        const hideTarget = card === openCard ? mediaOpacity : 0;
+        card.hiding +=
+          (hideTarget - card.hiding) * (1 - Math.pow(1 - HIDE_EASING, step));
 
         const hidden = 1 - card.reveal;
         // Wrap into [0, COUNT) so a fixed set of meshes loops forever.
@@ -406,7 +594,8 @@ export default function SpiralCarousel() {
               Math.abs(b * VERTICAL_GAP),
               FADE_START,
               FADE_END,
-            ));
+            )) *
+          (1 - card.hiding);
       }
 
       renderer.render(scene, camera);
@@ -417,6 +606,7 @@ export default function SpiralCarousel() {
       cancelAnimationFrame(frame);
       observer.disconnect();
       window.removeEventListener("pointerdown", play);
+      window.removeEventListener("keydown", onKeyDown);
       video.removeEventListener("loadedmetadata", onMeta);
       canvas.removeEventListener("wheel", onWheel);
       canvas.removeEventListener("pointerdown", onPointerDown);
@@ -424,9 +614,16 @@ export default function SpiralCarousel() {
       canvas.removeEventListener("pointerup", endDrag);
       canvas.removeEventListener("pointercancel", endDrag);
       canvas.removeEventListener("pointerleave", onPointerLeave);
+      closeBtn.removeEventListener("click", closeVideo);
+      backdrop.removeEventListener("click", closeVideo);
       video.pause();
       video.removeAttribute("src");
       video.remove();
+      fsVideo.pause();
+      fsVideo.removeAttribute("src");
+      fsVideo.remove();
+      backdrop.remove();
+      closeBtn.remove();
       for (const card of cards) card.mesh.material.dispose();
       geometry.dispose();
       texture.dispose();
