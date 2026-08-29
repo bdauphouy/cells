@@ -65,6 +65,15 @@ const REVEAL_STAGGER = 0.05; // seconds between each card's entrance
  * card's mesh hides the instant the clone appears in its place, so the
  * handoff reads as one continuous shape rather than a swap.
  */
+/* ── Background grid ──────────────────────────────────────────────────────
+ * A faint white grid sits behind the cards at all times; a brighter patch
+ * tracks the pointer, like a flashlight passing over graph paper.
+ */
+const GRID_SIZE = 48; // px between lines
+const GRID_BASE_ALPHA = 0.08; // always-on grid line opacity, everywhere
+const GRID_SPOT_ALPHA = 0.06; // extra opacity layered on near the pointer
+const GRID_SPOT_RADIUS = 320; // px, spotlight falloff radius
+
 const OPEN_MS = 600;
 const CLOSE_MS = 480;
 const SWAP_MS = 150; // crossfade between the curled mesh and the flat player
@@ -111,12 +120,25 @@ export default function SpiralCarousel() {
     texture.magFilter = THREE.LinearFilter;
     texture.generateMipmaps = false;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setClearColor(0x0a0a0a, 1);
+    const brand = getComputedStyle(document.documentElement)
+      .getPropertyValue("--brand")
+      .trim();
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setClearColor(new THREE.Color(brand), 0);
     const canvas = renderer.domElement;
-    canvas.style.display = "block";
-    canvas.style.width = "100%";
-    canvas.style.height = "100%";
+    canvas.style.cssText =
+      "position:absolute;inset:0;z-index:1;display:block;width:100%;height:100%";
+
+    const gridLines = (alpha: number) =>
+      `linear-gradient(rgba(255,255,255,${alpha}) 1px, transparent 1px),` +
+      `linear-gradient(90deg, rgba(255,255,255,${alpha}) 1px, transparent 1px)`;
+    const gridBase = document.createElement("div");
+    gridBase.style.cssText = `position:absolute;inset:0;z-index:0;pointer-events:none;background-image:${gridLines(GRID_BASE_ALPHA)};background-size:${GRID_SIZE}px ${GRID_SIZE}px;`;
+    const gridSpot = document.createElement("div");
+    gridSpot.style.cssText = `position:absolute;inset:0;z-index:0;pointer-events:none;opacity:0;transition:opacity 0.4s ease;background-image:${gridLines(GRID_SPOT_ALPHA)};background-size:${GRID_SIZE}px ${GRID_SIZE}px;`;
+    host.appendChild(gridBase);
+    host.appendChild(gridSpot);
     host.appendChild(canvas);
 
     const scene = new THREE.Scene();
@@ -376,6 +398,10 @@ export default function SpiralCarousel() {
         ((e.clientX - rect.left) / rect.width) * 2 - 1,
         -((e.clientY - rect.top) / rect.height) * 2 + 1,
       );
+      const mask = `radial-gradient(circle ${GRID_SPOT_RADIUS}px at ${e.clientX - rect.left}px ${e.clientY - rect.top}px, black, transparent)`;
+      gridSpot.style.maskImage = mask;
+      gridSpot.style.webkitMaskImage = mask;
+      gridSpot.style.opacity = "1";
       if (!dragging) return;
       push(-(e.clientY - lastPointerY) * DRAG_SENS);
       lastPointerY = e.clientY;
@@ -400,7 +426,10 @@ export default function SpiralCarousel() {
         if (card) openVideo(card);
       }
     };
-    const onPointerLeave = () => pointer.set(2, 2);
+    const onPointerLeave = () => {
+      pointer.set(2, 2);
+      gridSpot.style.opacity = "0";
+    };
 
     canvas.addEventListener("wheel", onWheel, { passive: true });
     canvas.addEventListener("pointerdown", onPointerDown);
@@ -523,13 +552,15 @@ export default function SpiralCarousel() {
       texture.dispose();
       renderer.dispose();
       canvas.remove();
+      gridBase.remove();
+      gridSpot.remove();
     };
   }, []);
 
   return (
     <div
       ref={hostRef}
-      className="relative min-h-0 w-full flex-1 touch-none overflow-hidden bg-[#0a0a0a]"
+      className="relative min-h-0 w-full flex-1 touch-none overflow-hidden bg-brand"
     />
   );
 }

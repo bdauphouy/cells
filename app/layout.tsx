@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import Image from "next/image";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -21,9 +22,19 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} h-full overflow-hidden antialiased`}
     >
-      <body className="min-h-full flex flex-col">{children}</body>
+      <body className="h-full flex flex-col overflow-hidden">
+        <Image
+          src="/logo.svg"
+          alt="Logo"
+          width={140}
+          height={91}
+          className="pointer-events-none fixed top-6 left-6 z-10 h-14 w-auto"
+          priority
+        />
+        {children}
+      </body>
     </html>
   );
 }
