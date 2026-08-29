@@ -7,6 +7,8 @@ uniform float uSquash;
 uniform float uCenterY;
 uniform float uLens;
 uniform float uWhip;
+uniform float uFog;
+uniform float uSwell;
 
 varying vec2 vUv;
 varying float vShade;
@@ -19,6 +21,12 @@ void main() {
   vec3 pos = position;
   pos.x *= 1.0 + rush * uSquash * 0.6;
   pos.y *= 1.0 - rush * uSquash;
+
+  // Margin for the fragment stage's soft border — the card itself keeps its
+  // size, the plane around it does not. The angular margin survives it: a
+  // card only reaches its neighbour's plane past 1.77x its width, and the
+  // swell tops out well under that.
+  pos.xy *= uSwell;
 
   // Curl the sheet outward from the cylinder. Bulging along the local z
   // leaves the angular wedge untouched, so cards still cannot cross.

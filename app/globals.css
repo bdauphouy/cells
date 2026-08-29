@@ -21,6 +21,97 @@
   }
 }
 
+/* ── Cloud banks ───────────────────────────────────────────────────────────
+ * The haze the spiral's cards vanish into, sitting over the canvas at both
+ * ends of the viewport. Drift is transform-only so it stays on the compositor.
+ */
+/* Light, never a lid: the haze is composited with `screen`, so it brightens
+ * what is under it instead of covering it. Nothing is clipped and nothing is
+ * veiled, so the bank has no border to notice — only a falloff. */
+.cloud-bank {
+  position: absolute;
+  left: 50%;
+  z-index: 2;
+  width: min(900px, 82%);
+  height: 42%;
+  pointer-events: none;
+  mix-blend-mode: screen;
+  transform: translateX(-50%);
+}
+
+.cloud-bank--top {
+  top: -8%;
+}
+
+/* Flipped rather than re-aimed: the puffs sit at fixed heights inside the
+ * bank, so mirroring the whole thing is what keeps the two ends equally
+ * dense. Aiming only the mask downward would leave those puffs stranded in
+ * its falloff, and the bottom would read thinner than the top. */
+.cloud-bank--bottom {
+  bottom: -8%;
+  transform: translateX(-50%) scaleY(-1);
+}
+
+.cloud-puffs {
+  position: absolute;
+  inset: 0;
+  background-repeat: no-repeat;
+  /* Fades out on every side well before the box ends, so the element's own
+   * rectangle can never be read off the screen. */
+  mask-image: radial-gradient(72% 96% at 50% 4%, black, transparent 80%);
+}
+
+.cloud-puffs--near {
+  background-image:
+    radial-gradient(
+      46% 72% at 22% 42%,
+      rgb(214 229 255 / 0.15),
+      transparent 72%
+    ),
+    radial-gradient(
+      40% 64% at 55% 26%,
+      rgb(214 229 255 / 0.12),
+      transparent 72%
+    ),
+    radial-gradient(
+      48% 76% at 84% 48%,
+      rgb(214 229 255 / 0.14),
+      transparent 72%
+    );
+  animation: cloud-drift 41s ease-in-out infinite;
+}
+
+.cloud-puffs--far {
+  background-image:
+    radial-gradient(
+      58% 88% at 32% 28%,
+      rgb(214 229 255 / 0.1),
+      transparent 74%
+    ),
+    radial-gradient(
+      52% 80% at 72% 38%,
+      rgb(214 229 255 / 0.085),
+      transparent 74%
+    );
+  animation: cloud-drift 67s ease-in-out infinite reverse;
+}
+
+@keyframes cloud-drift {
+  0%,
+  100% {
+    transform: translate3d(-4%, 0, 0);
+  }
+  50% {
+    transform: translate3d(4%, 0, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cloud-puffs {
+    animation: none;
+  }
+}
+
 body {
   background: var(--background);
   color: var(--foreground);

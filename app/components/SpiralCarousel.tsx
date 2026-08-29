@@ -52,8 +52,30 @@ const CURL = 0.18; // how far the middle of a card bulges outward, always on
 const LENS = 0.07; // parabolic bow: the spiral leans as it runs off-screen
 const WHIP = 1.1; // lateral smear proportional to scroll speed
 const SQUASH = 0.4; // vertical pinch under speed, capped in the shader
-const FADE_START = 3.1; // |y| where cards start dissolving...
-const FADE_END = 4.7; // ...and where they are gone, hiding the loop point
+
+/* ── Cloud bank ────────────────────────────────────────────────────────────
+ * Both ends of the spiral run into haze. A leaving card goes soft, milky and
+ * then torn apart in wisps by the shader, while banks of drifting vapour sit
+ * over the same stretch of screen — so it reads as a card swallowed by cloud
+ * rather than a card being turned off.
+ */
+/* Measured in screen space, not world space: the helix hangs below the origin
+ * and its cards sit at every depth, so a world-height rule would have one end
+ * dissolving mid-viewport and the other already gone over the edge. */
+const FOG_START = 0.55; // |ndc y| where the haze starts taking the card...
+const FOG_END = 1.05; // ...and where it has taken all of it
+/* The same dissolve keyed to raw helix height, taken as a floor, so a card
+ * that reaches the wrap without leaving the screen — a far one on a tall
+ * viewport — still goes to cloud rather than simply stopping. */
+const WRAP_FOG_START = 3.8;
+const WRAP_FOG_END = 4.6;
+const CUT_START = 4.4; // hard cutoff, insurance behind the dissolve: by here
+const CUT_END = 4.7; // nothing is left to see, so the wrap point stays hidden
+/* How much the plane outgrows its card at full fog, to leave the soft border
+ * somewhere to spill. Bounded by the same no-crossing rule as everything else:
+ * a card only reaches its neighbour's plane past 1.77x its width.
+ */
+const FOG_SWELL = 0.7;
 
 /* ── Reveal ──────────────────────────────────────────────────────────────── */
 const REVEAL_EASING = 0.055;
@@ -123,6 +145,12 @@ export default function SpiralCarousel() {
     const brand = getComputedStyle(document.documentElement)
       .getPropertyValue("--brand")
       .trim();
+    // Cloud is lit, not shaded: the brand hue kept, but taken almost all the
+    // way to white, so a card dissolves into light rather than into the dark.
+    const fogColor = new THREE.Color(brand).lerp(
+      new THREE.Color(0xffffff),
+      0.8,
+    );
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setClearColor(new THREE.Color(brand), 0);
@@ -141,9 +169,27 @@ export default function SpiralCarousel() {
     host.appendChild(gridSpot);
     host.appendChild(canvas);
 
+    // Vapour over both ends of the spiral. Two layers per bank, drifting at
+    // different speeds, so the haze keeps moving without ever reading as a
+    // repeating pattern.
+    const banks = (["top", "bottom"] as const).map((side) => {
+      const bank = document.createElement("div");
+      bank.className = `cloud-bank cloud-bank--${side}`;
+      for (let layer = 0; layer < 2; layer++) {
+        const puffs = document.createElement("div");
+        puffs.className = `cloud-puffs cloud-puffs--${layer === 0 ? "near" : "far"}`;
+        bank.appendChild(puffs);
+      }
+      host.appendChild(bank);
+      return bank;
+    });
+
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
     camera.position.set(0, 0, 8);
+    // The loop projects card centres before the first render, which is what
+    // would otherwise fill this in.
+    camera.updateMatrixWorld();
 
     const geometry = new THREE.PlaneGeometry(
       CARD_W,
@@ -175,6 +221,11 @@ export default function SpiralCarousel() {
           uReveal: { value: 0 },
           uOpacity: { value: 1 },
           uHighlight: { value: 0 },
+          uFog: { value: 0 },
+          uSwell: { value: 1 },
+          uFogDir: { value: 1 },
+          uFogColor: { value: fogColor },
+          uTime: { value: 0 },
         },
       });
       const mesh = new THREE.Mesh(geometry, material);
@@ -440,6 +491,7 @@ export default function SpiralCarousel() {
 
     /* ── Loop ─────────────────────────────────────────────────────────────── */
     const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector3(); // scratch, for each card's screen height
     const timer = new THREE.Timer();
     let elapsed = 0;
     let frame = 0;
@@ -464,9 +516,10 @@ export default function SpiralCarousel() {
       // frame; it stays cheap because three rejects most meshes on their
       // bounding sphere before touching a triangle.
       raycaster.setFromCamera(pointer, camera);
-      const hovered = dragging || frozen
-        ? undefined
-        : raycaster.intersectObjects(meshes)[0]?.object;
+      const hovered =
+        dragging || frozen
+          ? undefined
+          : raycaster.intersectObjects(meshes)[0]?.object;
       canvas.style.cursor = dragging
         ? "grabbing"
         : hovered
@@ -509,15 +562,20 @@ export default function SpiralCarousel() {
         u.uZoom.value = 1 + 0.06 * card.hover;
         u.uHighlight.value = card.hover;
         u.uReveal.value = card.reveal;
-        // Faded on the un-offset height, so CENTER_Y can't bias which end wraps.
+        u.uTime.value = elapsed;
+
+        const ndcY = ndc.copy(mesh.position).project(camera).y;
+        const depth = Math.abs(b * VERTICAL_GAP);
+        const fog = Math.max(
+          THREE.MathUtils.smoothstep(Math.abs(ndcY), FOG_START, FOG_END),
+          THREE.MathUtils.smoothstep(depth, WRAP_FOG_START, WRAP_FOG_END),
+        );
+        u.uFog.value = fog;
+        u.uSwell.value = 1 + fog * FOG_SWELL;
+        u.uFogDir.value = ndcY >= 0 ? 1 : -1;
         u.uOpacity.value =
           card.reveal *
-          (1 -
-            THREE.MathUtils.smoothstep(
-              Math.abs(b * VERTICAL_GAP),
-              FADE_START,
-              FADE_END,
-            )) *
+          (1 - THREE.MathUtils.smoothstep(depth, CUT_START, CUT_END)) *
           (1 - card.hiding);
       }
 
@@ -554,13 +612,14 @@ export default function SpiralCarousel() {
       canvas.remove();
       gridBase.remove();
       gridSpot.remove();
+      for (const bank of banks) bank.remove();
     };
   }, []);
 
   return (
     <div
       ref={hostRef}
-      className="relative min-h-0 w-full flex-1 touch-none overflow-hidden bg-brand"
+      className="relative isolate min-h-0 w-full flex-1 touch-none overflow-hidden bg-brand"
     />
   );
 }
