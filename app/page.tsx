@@ -1,4 +1,4 @@
-import SpiralCarousel from "./components/SpiralCarousel";
+import SpiralCarousel from "@/components/SpiralCarousel";
 
 export default function Home() {
   return (

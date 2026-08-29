@@ -2,6 +2,8 @@
 
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
+import vertexShader from "@/shaders/card.vert.glsl";
+import fragmentShader from "@/shaders/card.frag.glsl";
 
 /* ── Helix ─────────────────────────────────────────────────────────────────
  * Cards ride a vertical helix: each one orbits the y axis a little further
@@ -70,119 +72,6 @@ const CLOSE_FADE_LEAD_MS = 120; // finish the close fade this long before the sh
 const HIDE_EASING = 0.25; // per-frame pull toward the crossfade target
 const CLICK_MOVE_THRESHOLD = 6; // px of drag before a tap stops counting as a click
 const CLICK_TIME_THRESHOLD = 350; // ms
-
-const vertexShader = /* glsl */ `
-  #define PI 3.14159265359
-
-  uniform vec2 uPlaneSizes;
-  uniform float uCurl;
-  uniform float uScrollSpeed;
-
-  varying vec2 vUv;
-  varying float vShade;
-
-  void main() {
-    // Motion smear: the card pinches vertically and spreads sideways with
-    // speed. Capped so it can never widen past its angular wedge.
-    float rush = min(abs(uScrollSpeed), 0.6);
-
-    vec3 pos = position;
-    pos.x *= 1.0 + rush * ${SQUASH.toFixed(3)} * 0.6;
-    pos.y *= 1.0 - rush * ${SQUASH.toFixed(3)};
-
-    // Curl the sheet outward from the cylinder. Bulging along the local z
-    // leaves the angular wedge untouched, so cards still cannot cross.
-    float curl = sin(uv.x * PI);
-    pos.z += curl * uCurl;
-
-    vec3 worldPosition = (modelMatrix * vec4(position, 1.0)).xyz;
-    vec4 modelPosition = modelMatrix * vec4(pos, 1.0);
-    vec4 viewPosition = viewMatrix * modelPosition;
-
-    // Screen-space warps. These shift the projected x only — view depth is
-    // untouched, so the cards still sort correctly against each other.
-    // Bow is measured from the helix's visual centre, not the world origin.
-    float bowY = worldPosition.y - ${CENTER_Y.toFixed(3)};
-    viewPosition.x += bowY * bowY * ${LENS.toFixed(4)};
-    viewPosition.x += sin(uv.y * PI) * uScrollSpeed * ${WHIP.toFixed(3)};
-
-    gl_Position = projectionMatrix * viewPosition;
-
-    // Fake lighting off the curl, so the bend actually reads as a bend.
-    float slope = uCurl * PI * cos(uv.x * PI) / uPlaneSizes.x;
-    vec3 n = normalize(mat3(modelMatrix) * normalize(vec3(-slope, 0.0, 1.0)));
-    vec3 toCamera = normalize(cameraPosition - worldPosition);
-    vShade = mix(0.72, 1.08, abs(dot(n, toCamera)));
-
-    vUv = uv;
-  }
-`;
-
-const fragmentShader = /* glsl */ `
-  uniform sampler2D uTexture;
-  uniform vec2 uPlaneSizes;
-  uniform vec2 uImageSizes;
-  uniform float uZoom;
-  uniform float uReveal;
-  uniform float uOpacity;
-  uniform float uHighlight;
-
-  varying vec2 vUv;
-  varying float vShade;
-
-  void main() {
-    // Cover-fit the video into the 9:16 card without stretching it.
-    vec2 ratio = vec2(
-      min((uPlaneSizes.x / uPlaneSizes.y) / (uImageSizes.x / uImageSizes.y), 1.0),
-      min((uPlaneSizes.y / uPlaneSizes.x) / (uImageSizes.y / uImageSizes.x), 1.0)
-    );
-    vec2 uv = vUv * ratio + (1.0 - ratio) * 0.5;
-    vec2 zoomedUv = (uv - 0.5) / uZoom + 0.5;
-
-    vec4 color;
-    if (gl_FrontFacing) {
-      color = texture2D(uTexture, zoomedUv);
-    } else {
-      // The back of a card is the same footage read through the sheet. The
-      // mirroring comes free from looking at the geometry from behind; the
-      // rest is what diffusion does — spread, drained contrast, cooled tint.
-      float o = 0.028;
-      float w = o * 2.0;
-      vec4 c = texture2D(uTexture, uv) * 4.0;
-      c += texture2D(uTexture, uv + vec2(-o, -o));
-      c += texture2D(uTexture, uv + vec2( o, -o));
-      c += texture2D(uTexture, uv + vec2(-o,  o));
-      c += texture2D(uTexture, uv + vec2( o,  o));
-      c += texture2D(uTexture, uv + vec2(0.0, -o)) * 2.0;
-      c += texture2D(uTexture, uv + vec2(0.0,  o)) * 2.0;
-      c += texture2D(uTexture, uv + vec2(-o, 0.0)) * 2.0;
-      c += texture2D(uTexture, uv + vec2( o, 0.0)) * 2.0;
-      c += texture2D(uTexture, uv + vec2(0.0, -w));
-      c += texture2D(uTexture, uv + vec2(0.0,  w));
-      c += texture2D(uTexture, uv + vec2(-w, 0.0));
-      c += texture2D(uTexture, uv + vec2( w, 0.0));
-
-      vec3 diffused = c.rgb / 20.0;
-      diffused = mix(vec3(dot(diffused, vec3(0.299, 0.587, 0.114))), diffused, 0.55);
-      diffused = mix(diffused, vec3(0.16, 0.18, 0.24), 0.28);
-      color = vec4(diffused * 0.62, 1.0);
-    }
-
-    // Rounded-rect mask, measured in an aspect-corrected space so the corners
-    // stay circular on a tall card. Shrinks while the card is still arriving.
-    vec2 aspect = vec2(uPlaneSizes.x / uPlaneSizes.y, 1.0);
-    vec2 halfSize = 0.5 * aspect * mix(0.7, 1.0, uReveal);
-    float radius = 0.055;
-    vec2 d = abs((vUv - 0.5) * aspect) - halfSize + radius;
-    float sdf = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - radius;
-    float alpha = 1.0 - smoothstep(0.0, fwidth(sdf) * 1.5, sdf);
-
-    alpha *= smoothstep(0.0, 0.6, uReveal) * uOpacity;
-    if (alpha < 0.001) discard;
-
-    gl_FragColor = vec4(color.rgb * vShade * (1.0 + uHighlight * 0.35), alpha);
-  }
-`;
 
 type Card = {
   mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
@@ -255,6 +144,10 @@ export default function SpiralCarousel() {
           uPlaneSizes: { value: planeSizes },
           uImageSizes: { value: imageSizes },
           uCurl: { value: CURL },
+          uSquash: { value: SQUASH },
+          uCenterY: { value: CENTER_Y },
+          uLens: { value: LENS },
+          uWhip: { value: WHIP },
           uScrollSpeed: { value: 0 },
           uZoom: { value: 1 },
           uReveal: { value: 0 },
