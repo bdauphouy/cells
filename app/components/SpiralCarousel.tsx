@@ -411,14 +411,15 @@ export default function SpiralCarousel() {
 
     /* ── Loop ─────────────────────────────────────────────────────────────── */
     const raycaster = new THREE.Raycaster();
-    const clock = new THREE.Clock();
+    const timer = new THREE.Timer();
     let elapsed = 0;
     let frame = 0;
 
     const tick = () => {
       frame = requestAnimationFrame(tick);
+      timer.update();
       // Normalised to 60Hz, so the feel is identical on a 120Hz display.
-      const dt = Math.min(clock.getDelta(), 0.05);
+      const dt = Math.min(timer.getDelta(), 0.05);
       const step = dt * 60;
       elapsed += dt;
 
