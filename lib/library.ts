@@ -56,7 +56,11 @@ export async function removeLibraryVideo(
   return removed;
 }
 
-export type ResolvedCard = { playbackId: string; aspectRatio: string };
+export type ResolvedCard = {
+  playbackId: string;
+  aspectRatio: string;
+  title: string;
+};
 
 // What the carousel actually needs: no manual per-card assignment — the
 // library fills the spiral on its own. Fewer than MIN_CARDS videos loop
@@ -68,6 +72,10 @@ export async function resolveCards(): Promise<ResolvedCard[]> {
   const count = Math.max(MIN_CARDS, library.length);
   return Array.from({ length: count }, (_, i) => {
     const video = library[i % library.length];
-    return { playbackId: video.playbackId, aspectRatio: video.aspectRatio };
+    return {
+      playbackId: video.playbackId,
+      aspectRatio: video.aspectRatio,
+      title: video.title,
+    };
   });
 }

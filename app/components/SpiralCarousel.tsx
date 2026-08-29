@@ -1,12 +1,16 @@
 "use client";
 
+import fragmentShader from "@/lib/shaders/card.frag.glsl";
+import vertexShader from "@/lib/shaders/card.vert.glsl";
+import Hls from "hls.js";
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
-import Hls from "hls.js";
-import vertexShader from "@/lib/shaders/card.vert.glsl";
-import fragmentShader from "@/lib/shaders/card.frag.glsl";
 
-export type ResolvedCard = { playbackId: string; aspectRatio: string };
+export type ResolvedCard = {
+  playbackId: string;
+  aspectRatio: string;
+  title: string;
+};
 
 /* ── Video source ──────────────────────────────────────────────────────────
  * Served from Mux as adaptive HLS. Safari plays an .m3u8 natively through
@@ -118,6 +122,15 @@ const FOG_SWELL = 0.7;
 const REVEAL_EASING = 0.055;
 const REVEAL_STAGGER = 0.05; // seconds between each card's entrance
 
+/* A hovered card only counts as truly clickable — worth naming — once it's
+ * fully settled: past its entrance, not yet dissolving into a cloud bank,
+ * and not fading for the lightbox. Raycasting alone doesn't know any of
+ * this, since it hits a card's geometry even where the shader has already
+ * discarded that card down to a wisp. */
+const TITLE_REVEAL_MIN = 0.97;
+const TITLE_FOG_MAX = 0.15;
+const TITLE_OPACITY_MIN = 0.9;
+
 /* ── Live video activation ────────────────────────────────────────────────
  * Every card has its own clip now, so decoding all of them at once isn't an
  * option — bandwidth and browser decode limits both break well before 18
@@ -163,6 +176,7 @@ type Card = {
   hover: number;
   hiding: number;
   playbackId: string;
+  title: string;
   posterTexture: THREE.Texture;
   aspectW: number;
   aspectH: number;
@@ -208,6 +222,15 @@ export default function SpiralCarousel({
     host.appendChild(gridBase);
     host.appendChild(gridSpot);
     host.appendChild(canvas);
+
+    // Hovered card's title, as a fixed pill anchored to the bottom of the
+    // page rather than tracking the card — the card is mid-spiral, curling
+    // and dissolving, so anchoring text to it would fight the motion instead
+    // of reading calmly.
+    const titleLabel = document.createElement("div");
+    titleLabel.style.cssText =
+      "position:fixed;z-index:30;left:50%;bottom:32px;pointer-events:none;background:#fff;color:#111;font-size:13px;font-weight:500;letter-spacing:0.01em;padding:10px 20px;border-radius:9999px;box-shadow:0 10px 30px rgba(0,0,0,0.18);opacity:0;transform:translate(-50%,6px);transition:opacity 0.25s ease,transform 0.25s ease;white-space:nowrap;max-width:80vw;overflow:hidden;text-overflow:ellipsis;";
+    document.body.appendChild(titleLabel);
 
     // Vapour over both ends of the spiral. Two layers per bank, drifting at
     // different speeds, so the haze keeps moving without ever reading as a
@@ -288,6 +311,7 @@ export default function SpiralCarousel({
         hover: 0,
         hiding: 0,
         playbackId: video.playbackId,
+        title: video.title,
         posterTexture,
         aspectW,
         aspectH,
@@ -689,6 +713,19 @@ export default function SpiralCarousel({
         if (inViewport && u.uOpacity.value > 0.05) desired.add(card);
       }
 
+      // Uniforms above are current for this frame, so this check runs after
+      // that loop rather than off the raycast hit alone — a card can be the
+      // nearest hit and still be mid-entrance or half into a cloud bank.
+      const hu = hoveredCard?.mesh.material.uniforms;
+      const showTitle =
+        !!hu &&
+        hu.uReveal.value > TITLE_REVEAL_MIN &&
+        hu.uFog.value < TITLE_FOG_MAX &&
+        hu.uOpacity.value > TITLE_OPACITY_MIN;
+      if (showTitle) titleLabel.textContent = hoveredCard!.title;
+      titleLabel.style.opacity = showTitle ? "1" : "0";
+      titleLabel.style.transform = `translate(-50%,${showTitle ? 0 : 6}px)`;
+
       for (const card of cards) {
         const shouldBeActive = desired.has(card);
         if (shouldBeActive && !card.liveVideo) activateCard(card);
@@ -717,6 +754,7 @@ export default function SpiralCarousel({
       fsVideo.remove();
       backdrop.remove();
       closeBtn.remove();
+      titleLabel.remove();
       for (const card of cards) {
         deactivateCard(card);
         card.posterTexture.dispose();
