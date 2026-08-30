@@ -525,7 +525,7 @@ export default function AdminPage() {
                 <PaginationContent>
                   <PaginationItem>
                     <PaginationPrevious
-                      size="icon-sm"
+                      size="sm"
                       onClick={(e) => {
                         e.preventDefault();
                         setPage((p) => Math.max(1, p - 1));
@@ -541,6 +541,7 @@ export default function AdminPage() {
                   {Array.from({ length: pageCount }).map((_, i) => (
                     <PaginationItem key={i}>
                       <PaginationLink
+                        size="icon-sm"
                         isActive={currentPage === i + 1}
                         onClick={(e) => {
                           e.preventDefault();
@@ -553,7 +554,7 @@ export default function AdminPage() {
                   ))}
                   <PaginationItem>
                     <PaginationNext
-                      size="icon-sm"
+                      size="sm"
                       onClick={(e) => {
                         e.preventDefault();
                         setPage((p) => Math.min(pageCount, p + 1));
