@@ -186,26 +186,16 @@ const CAMERA_Z_MOBILE = 9.2;
  * gap is the one that keeps cards from crossing, so only the climb is
  * shortened; see the no-crossing note below for what that costs.
  *
- * `depthRamp` sizes the whole dissolve off cardCount * verticalGap, so with
- * the loop held at 10 clips this is the only lever left for how much of the
- * helix reads as a staircase before cloud eats it — the clear:dissolve:cut
- * split (in card-count terms) is fixed by cardCount alone, so widening the
- * gap doesn't add steps, it gives the ones there more air and more world
- * depth to climb through before wrapping. 0.55 puts the reachable depth
- * (limit = 4.5 * verticalGap ≈ 2.47) where a 14-clip loop at the old 0.38
- * packing landed — the count tried and found to read as a proper spiral
- * rather than a fanned deck — instead of the 1.71 the tight packing gave.
+ * `depthRamp` sizes the whole dissolve off cardCount * verticalGap, so
+ * widening the gap gives every card more air and more world depth to climb
+ * through before wrapping, independent of how many cards there are. 0.55
+ * was tuned against a loop held to 10 clips — back to the library's full
+ * count below, the same gap reaches proportionally further out before cloud
+ * eats it, which is untested territory worth an eye once it's running.
  */
 const VERTICAL_GAP = 0.62;
 const VERTICAL_GAP_MOBILE = 0.55;
 const MOBILE_WIDTH = 768;
-
-// How many distinct clips the mobile spiral cycles through before looping —
-// see the note by `cardCount` for why fewer total cards is its own perf lever
-// on a phone, separate from how many of them are live at once. Held here
-// rather than raised, since VERTICAL_GAP_MOBILE above is now doing the work
-// of making the loop read as a spiral.
-const CARD_COUNT_MOBILE = 10;
 
 /* No two cards may ever intersect. A curled card reaches its neighbour's plane
  * at (radius + CURL)*cos(a) + (CARD_W/2)*sin(a) - radius, which only stays
@@ -240,8 +230,8 @@ const MAX_SPEED = 0.85;
 const WHEEL_SENS = 0.00016;
 /* A thumb swipe crosses most of a phone screen in one flick, so the desktop
  * pixels-to-cards rate sends the spiral past several cards at once — too fast
- * to read, and fast enough to keep tripping the BUSY_SPEED gate that holds
- * new streams back.
+ * to read, and fast enough to keep tripping the scroll-pause gate that holds
+ * new streams back (see SCROLL_PAUSE_FRACTION).
  *
  * Slower still than that first cut: a card is marked a live-stream candidate
  * while it's still mostly hazy (see the fog gate around `candidates.push`),
@@ -373,19 +363,29 @@ const MAX_LIVE_MOBILE = 14;
  * few frames, and building one is expensive enough (MediaSource attach,
  * manifest fetch, first segment) to be felt as a stutter. Three things keep
  * that from happening: decide at 10Hz rather than every frame, hold new
- * streams back while the spiral is moving fast enough that nothing on it can
- * be read anyway, and let a card that has left keep its stream (paused) long
- * enough to cover a flick and its coast, so coming back costs nothing.
+ * streams back (and pause the ones already running) while the spiral is
+ * moving fast enough that nothing on it can be read anyway, and let a card
+ * that has left keep its stream (paused) long enough to cover a flick and
+ * its coast, so coming back costs nothing.
  */
 const RECONCILE_MS = 100;
-/* Cards/frame above which new streams wait. Sits at mobile's own speed cap
- * (MAX_SPEED_MOBILE), so this gate is now effectively a desktop-only guard —
- * mobile's cap is the thing doing the work there, slow enough that starting a
- * stream mid-scroll is never a bad bet. Left shared rather than split by
- * device, since desktop's faster cap is what still needs a threshold to duck
- * under.
+/* Fraction of maxSpeed above which live cards stop decoding rather than start
+ * new ones: WHIP already smears anything moving this fast past legibility
+ * (see the constant itself), so a card playing through a fast flick is
+ * spending decode and texture-upload work — real cost, on the very frames
+ * input handling and the spiral's own easing need most — on frames nobody
+ * can read. Already-live cards are paused the same way an off-edge card is,
+ * not torn down, so a flick that slows back down resumes for free.
+ *
+ * A fraction of maxSpeed rather than a fixed cards/frame figure: the old
+ * fixed threshold (BUSY_SPEED = 0.3) sat exactly at MAX_SPEED_MOBILE, so it
+ * could never trip on a phone — mobile's speed cap already tops out at the
+ * threshold meant to gate it. Scaling with maxSpeed makes the gate mean the
+ * same thing on both device classes: motion blur past the point of reading,
+ * not a specific number tuned to whichever device happened to be capped at
+ * it.
  */
-const BUSY_SPEED = 0.3;
+const SCROLL_PAUSE_FRACTION = 0.5;
 const LIVE_GRACE_MS = 2500; // a departed card keeps its stream this long
 /* Several at a time rather than one: at 10Hz, one-at-a-time took over a second
  * to fill a phone's worth of cards, which is the whole of a first impression
@@ -556,21 +556,14 @@ export default function SpiralCarousel({
       return texture;
     };
 
-    /* The library drives the card count directly: fewer than MIN_CARDS videos
-     * loop round to reach it, MIN_CARDS or more get one card each — except on
-     * a phone, where a shorter loop means fewer distinct <video> elements and
-     * hls.js instances ever exist at once, not just fewer live at a time. The
-     * spiral's visible window is a fixed share of the loop regardless of its
-     * length (radius, gap and camera are unrelated to card count), so a
-     * shorter loop doesn't show less of the spiral — it just cycles through
-     * fewer clips to fill it, and caps how much the app ever has to hold in
-     * memory. Gated on `lowPower`, not the reactive `mobile` resize() derives:
-     * this decides how many meshes exist at all, which happens once at mount
-     * alongside the geometry itself.
-     */
-    const cardCount = lowPower
-      ? Math.min(videos.length, CARD_COUNT_MOBILE)
-      : videos.length;
+    // The library drives the card count directly: fewer than MIN_CARDS videos
+    // loop round to reach it, MIN_CARDS or more get one card each. Mobile
+    // previously capped this lower — fewer <video> elements and hls.js
+    // instances ever existing at once, not just fewer live at a time — but
+    // that cost the spiral its shape at the old climb, so it's back to the
+    // full count on every device while VERTICAL_GAP_MOBILE and the live-
+    // stream budget carry the phone-specific cost instead.
+    const cardCount = videos.length;
 
     // Layout that follows the viewport rather than the device, filled in by
     // the first resize() below and kept current from then on.
@@ -880,14 +873,21 @@ export default function SpiralCarousel({
 
       // Force a style flush so the browser commits the start transform before
       // it transitions to the end one, instead of collapsing both into one.
+      // A single rAF isn't a reliable enough gate for that commit on its
+      // own — it can still land before the frame that paints the start state
+      // gets to the screen, especially with a card's worth of decoders and
+      // fullscreen's own hls.js attach competing for the same frame — so the
+      // end-state change waits a second rAF, one full painted frame later.
       fsVideo.getBoundingClientRect();
       requestAnimationFrame(() => {
-        fsVideo.style.transition = `opacity ${SWAP_MS}ms ease, transform ${OPEN_MS}ms cubic-bezier(0.22,1,0.36,1), border-radius ${OPEN_MS}ms ease`;
-        placeFullscreen();
-        fsVideo.style.opacity = "1";
-        backdrop.style.background = "rgba(0,0,0,0.92)";
-        closeBtn.style.opacity = "1";
-        closeBtn.style.pointerEvents = "auto";
+        requestAnimationFrame(() => {
+          fsVideo.style.transition = `opacity ${SWAP_MS}ms ease, transform ${OPEN_MS}ms cubic-bezier(0.22,1,0.36,1), border-radius ${OPEN_MS}ms ease`;
+          placeFullscreen();
+          fsVideo.style.opacity = "1";
+          backdrop.style.background = "rgba(0,0,0,0.92)";
+          closeBtn.style.opacity = "1";
+          closeBtn.style.pointerEvents = "auto";
+        });
       });
     };
 
@@ -1250,15 +1250,18 @@ export default function SpiralCarousel({
       for (let i = 0; i < budget; i++) inView[i].wantsLive = true;
 
       let starts = ACTIVATIONS_PER_TICK;
-      const busy = Math.abs(speed) > BUSY_SPEED;
+      const scrolling = Math.abs(speed) > maxSpeed * SCROLL_PAUSE_FRACTION;
       for (const card of cards) {
         if (card.wantsLive) {
           card.idleSince = undefined;
-          if (card.liveVideo) resumeCard(card);
-          // Nothing is started mid-flick: by the time the manifest and first
-          // segment land the card is somewhere else entirely, and the work of
-          // building the stream lands on the frames that can least afford it.
-          else if (!busy && starts > 0) {
+          // Nothing is decoded mid-flick, running or not: a card already
+          // playing is paused (see SCROLL_PAUSE_FRACTION) rather than spend
+          // decode on a frame no one can read, and by the time a fresh
+          // manifest and first segment would land the card is somewhere else
+          // entirely, so a new stream isn't started either.
+          if (scrolling) suspendCard(card);
+          else if (card.liveVideo) resumeCard(card);
+          else if (starts > 0) {
             activateCard(card);
             starts--;
           }
