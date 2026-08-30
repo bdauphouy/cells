@@ -34,11 +34,22 @@ float valueNoise(vec2 p) {
   );
 }
 
-// Four octaves is enough to read as vapour rather than as a texture.
+/* Four octaves is enough to read as vapour rather than as a texture. Two is
+ * not, quite — the wisps come out coarser — but this runs per fragment over
+ * every card that is anywhere near a cloud bank, and on a phone the coarser
+ * vapour is the better trade. LOW_QUALITY is set from the device class in
+ * SpiralCarousel; see the material's `defines`.
+ */
+#ifdef LOW_QUALITY
+#define FBM_OCTAVES 2
+#else
+#define FBM_OCTAVES 4
+#endif
+
 float fbm(vec2 p) {
   float v = 0.0;
   float a = 0.5;
-  for (int i = 0; i < 4; i++) {
+  for (int i = 0; i < FBM_OCTAVES; i++) {
     v += a * valueNoise(p);
     p *= 2.0;
     a *= 0.5;
@@ -63,20 +74,40 @@ void main() {
     color = texture2D(uTexture, zoomedUv);
 
     // Haze in front of the card scatters it before it hides it, so the
-    // picture goes out of focus on the way into the bank.
+    // picture goes out of focus on the way into the bank. The card is being
+    // drained of colour and torn apart by the same fog, so the two-tap
+    // version below is close enough to pass where fill rate is scarce.
     if (uFog > 0.001) {
       float o = uFog * 0.022;
+#ifdef LOW_QUALITY
+      vec4 c = texture2D(uTexture, zoomedUv + vec2(-o, -o));
+      c += texture2D(uTexture, zoomedUv + vec2(o, o));
+      color = mix(color, c * 0.5, uFog);
+#else
       vec4 c = texture2D(uTexture, zoomedUv + vec2(-o, -o));
       c += texture2D(uTexture, zoomedUv + vec2(o, -o));
       c += texture2D(uTexture, zoomedUv + vec2(-o, o));
       c += texture2D(uTexture, zoomedUv + vec2(o, o));
       color = mix(color, c * 0.25, uFog);
+#endif
     }
   } else {
     // The back of a card is the same footage read through the sheet. The
     // mirroring comes free from looking at the geometry from behind; the
     // rest is what diffusion does — spread, drained contrast, cooled tint.
+    // Half the cards on the helix face away at any moment, so this kernel is
+    // paid for over a lot of the screen: the reduced one keeps the same
+    // radius and total weight, just fewer taps across it.
     float o = 0.028;
+#ifdef LOW_QUALITY
+    vec4 c = texture2D(uTexture, uv) * 4.0;
+    c += texture2D(uTexture, uv + vec2(0.0, -o)) * 2.0;
+    c += texture2D(uTexture, uv + vec2(0.0,  o)) * 2.0;
+    c += texture2D(uTexture, uv + vec2(-o, 0.0)) * 2.0;
+    c += texture2D(uTexture, uv + vec2( o, 0.0)) * 2.0;
+
+    vec3 diffused = c.rgb / 12.0;
+#else
     float w = o * 2.0;
     vec4 c = texture2D(uTexture, uv) * 4.0;
     c += texture2D(uTexture, uv + vec2(-o, -o));
@@ -93,6 +124,7 @@ void main() {
     c += texture2D(uTexture, uv + vec2( w, 0.0));
 
     vec3 diffused = c.rgb / 20.0;
+#endif
     diffused = mix(vec3(dot(diffused, vec3(0.299, 0.587, 0.114))), diffused, 0.55);
     diffused = mix(diffused, vec3(0.16, 0.18, 0.24), 0.28);
     color = vec4(diffused * 0.62, 1.0);

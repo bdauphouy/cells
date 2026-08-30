@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import * as tus from "tus-js-client";
@@ -139,7 +140,9 @@ export default function AdminPage() {
     ) => {
       setJobs((prev) =>
         prev.map((j) =>
-          j.id === id ? { ...j, ...(typeof patch === "function" ? patch(j) : patch) } : j,
+          j.id === id
+            ? { ...j, ...(typeof patch === "function" ? patch(j) : patch) }
+            : j,
         ),
       );
     },
@@ -252,7 +255,8 @@ export default function AdminPage() {
       } catch (err) {
         updateJob(id, {
           state: "error",
-          error: err instanceof Error ? err.message : "Couldn't start the upload.",
+          error:
+            err instanceof Error ? err.message : "Couldn't start the upload.",
         });
         return;
       }
@@ -262,7 +266,10 @@ export default function AdminPage() {
         metadata: { filename: file.name, filetype: file.type },
         uploadSize: file.size,
         onError: (err) => {
-          updateJob(id, { state: "error", error: err.message || "Upload failed." });
+          updateJob(id, {
+            state: "error",
+            error: err.message || "Upload failed.",
+          });
         },
         onProgress: (bytesUploaded, bytesTotal) => {
           const pct = Math.round((bytesUploaded / bytesTotal) * 100);
@@ -293,10 +300,9 @@ export default function AdminPage() {
       const job = jobsRef.current.find((j) => j.id === id);
       removeJob(id);
       if (job?.assetId) {
-        void fetch(
-          `/api/admin/livepeer-upload?assetId=${job.assetId}`,
-          { method: "DELETE" },
-        ).catch(() => {});
+        void fetch(`/api/admin/livepeer-upload?assetId=${job.assetId}`, {
+          method: "DELETE",
+        }).catch(() => {});
       }
     },
     [removeJob],
@@ -345,8 +351,16 @@ export default function AdminPage() {
   };
 
   return (
-    <main className="dark flex h-dvh flex-col overflow-hidden bg-background p-6 text-foreground sm:p-10">
-      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col overflow-hidden">
+    <main className="dark min-h-dvh bg-background p-6 text-foreground sm:p-10">
+      <div className="mx-auto w-full max-w-3xl">
+        <Image
+          src="/logo.svg"
+          alt="Logo"
+          width={140}
+          height={91}
+          className="mb-8 h-10 w-auto"
+          priority
+        />
         <div className="mb-8 flex items-center justify-between">
           <h1 className="text-xl font-semibold">Video library</h1>
           <div className="flex items-center gap-2">
@@ -364,7 +378,7 @@ export default function AdminPage() {
           </div>
         </div>
 
-        <Card className="mb-6 shrink-0">
+        <Card className="mb-6">
           <CardHeader>
             <CardTitle>Upload a video</CardTitle>
           </CardHeader>
@@ -439,7 +453,11 @@ export default function AdminPage() {
                       // Reset so re-picking the same file still fires change.
                       e.target.value = "";
                       if (file) {
-                        void startUpload(file, title.trim(), description.trim());
+                        void startUpload(
+                          file,
+                          title.trim(),
+                          description.trim(),
+                        );
                         setTitle("");
                         setDescription("");
                       }
@@ -464,8 +482,7 @@ export default function AdminPage() {
                       <>
                         <Alert variant="destructive">
                           <AlertDescription>
-                            {job.error ?? "Something went wrong."} (
-                            {job.title})
+                            {job.error ?? "Something went wrong."} ({job.title})
                           </AlertDescription>
                         </Alert>
                         <div className="flex gap-2">
@@ -500,16 +517,16 @@ export default function AdminPage() {
           </CardContent>
         </Card>
 
-        <Card className="flex min-h-0 flex-1 flex-col">
-          <CardHeader className="shrink-0">
+        <Card>
+          <CardHeader>
             <CardTitle>Library</CardTitle>
             <CardDescription>
-              Cards on the site fill from this library automatically — looped
-              to reach {MIN_CARDS} cards, or one card per video once you have
-              more than that.
+              Cards on the site fill from this library automatically — looped to
+              reach {MIN_CARDS} cards, or one card per video once you have more
+              than that.
             </CardDescription>
           </CardHeader>
-          <CardContent className="min-h-0 flex-1 overflow-y-auto px-0">
+          <CardContent className="px-0">
             {!loaded ? (
               <div className="grid gap-3 px-4">
                 {Array.from({ length: 3 }).map((_, i) => (
@@ -627,10 +644,12 @@ export default function AdminPage() {
                       </AlertDialogTrigger>
                       <AlertDialogContent>
                         <AlertDialogHeader>
-                          <AlertDialogTitle>Delete this video?</AlertDialogTitle>
+                          <AlertDialogTitle>
+                            Delete this video?
+                          </AlertDialogTitle>
                           <AlertDialogDescription>
-                            “{video.title}” will be removed from the library
-                            and deleted from Livepeer. This can’t be undone.
+                            “{video.title}” will be removed from the library and
+                            deleted from Livepeer. This can’t be undone.
                           </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
@@ -650,7 +669,7 @@ export default function AdminPage() {
             )}
           </CardContent>
           {pageCount > 1 && (
-            <div className="shrink-0 border-t px-4 py-3">
+            <div className="border-t px-4 py-3">
               <Pagination>
                 <PaginationContent>
                   <PaginationItem>

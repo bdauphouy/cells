@@ -66,16 +66,26 @@ const CARD_H = 1.5;
 const CARD_W = (CARD_H * 9) / 16; // Reels are 9:16
 const RADIUS = 2;
 const ANGLE_GAP = 0.85; // radians of orbit per card
-const VERTICAL_GAP = 0.62; // world units of climb per card
 const SEGMENTS = 20;
+
+/* World units of climb per card. A phone is narrow, so the same climb that
+ * reads as a comfortable stride on a desktop leaves the cards stranded far
+ * apart on a tall screen — the spiral stops reading as one strip. The angular
+ * gap is the one that keeps cards from crossing, so only the climb is
+ * shortened; see the no-crossing note below for what that costs.
+ */
+const VERTICAL_GAP = 0.62;
+const VERTICAL_GAP_MOBILE = 0.45;
+const MOBILE_WIDTH = 768;
 
 /* No two cards may ever intersect. A curled card reaches its neighbour's plane
  * at (RADIUS + CURL)*cos(a) + (CARD_W/2)*sin(a) - RADIUS, which only stays
  * negative for a > 0.640 rad — so ANGLE_GAP clears it by 0.244. Pairs 7, 8 and
  * 15 steps apart do land back inside that wedge, since a multiple of ANGLE_GAP
- * comes back near a multiple of 2*PI there, but by then they sit 4.3+ apart
- * vertically, far beyond CARD_H. The speed distortions in the shader are
- * bounded so they preserve this margin.
+ * comes back near a multiple of 2*PI there, but by then they sit far enough
+ * apart vertically to clear CARD_H at full swell (2.55 world units) — 4.3 at
+ * the desktop climb, and still 3.15 at the shorter mobile one. The speed
+ * distortions in the shader are bounded so they preserve this margin.
  */
 
 /* The card whose plane squarely faces the camera is the one a quarter turn
@@ -84,7 +94,8 @@ const SEGMENTS = 20;
  * eye. (The reference hardcodes -0.8, which is this same figure for its own
  * constants.)
  */
-const CENTER_Y = (-Math.PI / 2 / ANGLE_GAP) * VERTICAL_GAP;
+const centerYFor = (verticalGap: number) =>
+  (-Math.PI / 2 / ANGLE_GAP) * verticalGap;
 
 /* ── Motion ────────────────────────────────────────────────────────────────
  * One eased scalar drives everything: `speed` (cards per 60Hz frame) chases
@@ -117,11 +128,31 @@ const FOG_START = 0.55; // |ndc y| where the haze starts taking the card...
 const FOG_END = 1.05; // ...and where it has taken all of it
 /* The same dissolve keyed to raw helix height, taken as a floor, so a card
  * that reaches the wrap without leaving the screen — a far one on a tall
- * viewport — still goes to cloud rather than simply stopping. */
+ * viewport — still goes to cloud rather than simply stopping.
+ *
+ * These have to finish inside the depth the helix actually reaches, which is
+ * half the card count times the climb — otherwise a card is still solid when
+ * it teleports to the other end. A short library or the shorter mobile climb
+ * both cut that depth down, so the ramp is squeezed to fit when it has to;
+ * `depthRamp` keeps the four thresholds in the same proportion either way.
+ */
 const WRAP_FOG_START = 3.8;
 const WRAP_FOG_END = 4.6;
 const CUT_START = 4.4; // hard cutoff, insurance behind the dissolve: by here
 const CUT_END = 4.7; // nothing is left to see, so the wrap point stays hidden
+
+const depthRamp = (cardCount: number, verticalGap: number) => {
+  // The deepest a card ever gets: `b` runs to ±(cardCount - 1)/2 slots.
+  const limit = ((cardCount - 1) / 2) * verticalGap;
+  const scale = Math.min(1, limit / CUT_END);
+  return {
+    wrapFogStart: WRAP_FOG_START * scale,
+    wrapFogEnd: WRAP_FOG_END * scale,
+    cutStart: CUT_START * scale,
+    cutEnd: CUT_END * scale,
+  };
+};
+
 /* How much the plane outgrows its card at full fog, to leave the soft border
  * somewhere to spill. Bounded by the same no-crossing rule as everything else:
  * a card only reaches its neighbour's plane past 1.77x its width.
@@ -154,6 +185,30 @@ const VIEWPORT_ACTIVATE = 0.92; // NDC radius a card must enter to start decodin
 const VIEWPORT_DEACTIVATE = 1.08; // ...and must drift back past to stop — the
 // gap between the two is hysteresis, so a card sitting near the edge doesn't
 // restart its stream every frame.
+
+/* "Only a handful at once" turned out to need saying out loud. A tall phone
+ * screen puts far more of the helix inside the NDC square than a desktop one
+ * does, and every live card is a separate MediaSource decode plus a full
+ * texture upload per rendered frame. Past the device's decoder budget streams
+ * stall and hand back black or half-decoded frames, which is what makes the
+ * cards visibly darken and then recover. So the count is capped outright and
+ * the budget goes to the cards nearest the middle of the screen.
+ */
+const MAX_LIVE = 6;
+const MAX_LIVE_MOBILE = 3;
+
+/* Reconciling at 60Hz meant a fast flick tore down and rebuilt streams every
+ * few frames, and building one is expensive enough (MediaSource attach,
+ * manifest fetch, first segment) to be felt as a stutter. Three things keep
+ * that from happening: decide at 10Hz rather than every frame, never start a
+ * stream while the spiral is moving fast enough that the card will be gone
+ * before it plays, and let a card that has left keep its stream (paused) for
+ * a moment in case it comes straight back.
+ */
+const RECONCILE_MS = 100;
+const BUSY_SPEED = 0.1; // cards/frame above which new streams wait
+const LIVE_GRACE_MS = 1000; // a departed card keeps its stream this long
+const ACTIVATIONS_PER_TICK = 1; // ...and they start one at a time
 
 /* ── Fullscreen ────────────────────────────────────────────────────────────
  * A tap grows the card from its exact on-screen rect into a real
@@ -193,6 +248,14 @@ type Card = {
   liveVideo?: HTMLVideoElement;
   liveHls?: Hls | null;
   liveTexture?: THREE.VideoTexture;
+  // When the card stopped qualifying for a live stream. Undefined while it
+  // still qualifies; the stream is torn down once this is old enough.
+  idleSince?: number;
+  // Distance from the middle of the screen, in NDC — how the limited number
+  // of live streams is handed out. Recomputed every frame.
+  priority: number;
+  // Whether the last reconciliation pass gave this card one of them.
+  wantsLive: boolean;
 };
 
 export default function SpiralCarousel({
@@ -216,7 +279,24 @@ export default function SpiralCarousel({
       0.8,
     );
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    /* Device class, fixed for the life of the mount. A phone doesn't stop
+     * being a phone on rotation, and the two things keyed off this — the
+     * shader's quality branch and the antialias buffer — are both baked in at
+     * WebGL context/program creation, so re-deciding them later would mean
+     * recompiling shaders mid-scroll. The viewport-width decisions (climb,
+     * field of view, live-stream budget) are separate and do follow resizes.
+     */
+    const touchOnly = window.matchMedia("(hover: none)").matches;
+    const lowPower = touchOnly || window.innerWidth < MOBILE_WIDTH;
+
+    const renderer = new THREE.WebGLRenderer({
+      // The card edges are drawn by the fragment shader's own signed-distance
+      // falloff, so MSAA only smooths the geometry seams behind them — not
+      // worth a multisampled buffer's fill cost on a phone.
+      antialias: !lowPower,
+      alpha: true,
+      powerPreference: "high-performance",
+    });
     renderer.setClearColor(new THREE.Color(brand), 0);
     const canvas = renderer.domElement;
     canvas.style.cssText =
@@ -227,10 +307,14 @@ export default function SpiralCarousel({
       `linear-gradient(90deg, rgba(255,255,255,${alpha}) 1px, transparent 1px)`;
     const gridBase = document.createElement("div");
     gridBase.style.cssText = `position:absolute;inset:0;z-index:0;pointer-events:none;background-image:${gridLines(GRID_BASE_ALPHA)};background-size:${GRID_SIZE}px ${GRID_SIZE}px;`;
-    const gridSpot = document.createElement("div");
-    gridSpot.style.cssText = `position:absolute;inset:0;z-index:0;pointer-events:none;opacity:0;transition:opacity 0.4s ease;background-image:${gridLines(GRID_SPOT_ALPHA)};background-size:${GRID_SIZE}px ${GRID_SIZE}px;`;
+    // The spotlight follows a pointer that a touch device doesn't have. It
+    // costs a full-viewport masked repaint per pointer event, so on touch it
+    // is never created rather than sitting at 0 opacity waiting for one.
+    const gridSpot = touchOnly ? null : document.createElement("div");
+    if (gridSpot)
+      gridSpot.style.cssText = `position:absolute;inset:0;z-index:0;pointer-events:none;opacity:0;transition:opacity 0.4s ease;background-image:${gridLines(GRID_SPOT_ALPHA)};background-size:${GRID_SIZE}px ${GRID_SIZE}px;`;
     host.appendChild(gridBase);
-    host.appendChild(gridSpot);
+    if (gridSpot) host.appendChild(gridSpot);
     host.appendChild(canvas);
 
     // Hovered card's title, as a fixed pill anchored to the bottom of the
@@ -244,11 +328,14 @@ export default function SpiralCarousel({
 
     // Vapour over both ends of the spiral. Two layers per bank, drifting at
     // different speeds, so the haze keeps moving without ever reading as a
-    // repeating pattern.
+    // repeating pattern — except on a phone, where each layer is one more
+    // `screen`-blended element the compositor has to read the canvas back
+    // for. The far layer is the faint one, so that is the one dropped.
+    const bankLayers = lowPower ? 1 : 2;
     const banks = (["top", "bottom"] as const).map((side) => {
       const bank = document.createElement("div");
       bank.className = `cloud-bank cloud-bank--${side}`;
-      for (let layer = 0; layer < 2; layer++) {
+      for (let layer = 0; layer < bankLayers; layer++) {
         const puffs = document.createElement("div");
         puffs.className = `cloud-puffs cloud-puffs--${layer === 0 ? "near" : "far"}`;
         bank.appendChild(puffs);
@@ -288,6 +375,13 @@ export default function SpiralCarousel({
     // videos loop round to reach it, MIN_CARDS or more get one card each.
     const cardCount = videos.length;
 
+    // Layout that follows the viewport rather than the device, filled in by
+    // the first resize() below and kept current from then on.
+    let verticalGap = VERTICAL_GAP;
+    let centerY = centerYFor(verticalGap);
+    let ramp = depthRamp(cardCount, verticalGap);
+    let maxLive = MAX_LIVE;
+
     const cards: Card[] = [];
     for (let i = 0; i < cardCount; i++) {
       const video = videos[i];
@@ -302,13 +396,17 @@ export default function SpiralCarousel({
         fragmentShader,
         transparent: true,
         side: THREE.DoubleSide,
+        // Both of the fragment shader's expensive passes — the 13-tap
+        // diffusion behind a card and the vapour noise that tears it apart —
+        // are cut down under this. See card.frag.glsl.
+        defines: lowPower ? { LOW_QUALITY: "" } : {},
         uniforms: {
           uTexture: { value: posterTexture },
           uPlaneSizes: { value: planeSizes },
           uImageSizes: { value: new THREE.Vector2(aspectW, aspectH) },
           uCurl: { value: CURL },
           uSquash: { value: SQUASH },
-          uCenterY: { value: CENTER_Y },
+          uCenterY: { value: centerY },
           uLens: { value: LENS },
           uWhip: { value: WHIP },
           uScrollSpeed: { value: 0 },
@@ -337,6 +435,8 @@ export default function SpiralCarousel({
         posterTexture,
         aspectW,
         aspectH,
+        priority: Infinity,
+        wantsLive: false,
       });
     }
     const meshes = cards.map((c) => c.mesh);
@@ -372,6 +472,18 @@ export default function SpiralCarousel({
       else el.addEventListener("loadeddata", swap, { once: true });
     };
 
+    // Leaving the viewport pauses the stream immediately — that is what frees
+    // the decoder — but the element and its hls.js instance are kept for a
+    // moment by the caller, since rebuilding them is the expensive half and a
+    // card that drifted off the edge often drifts straight back on.
+    const suspendCard = (card: Card) => {
+      card.liveVideo?.pause();
+    };
+
+    const resumeCard = (card: Card) => {
+      if (card.liveVideo?.paused) void card.liveVideo.play().catch(() => {});
+    };
+
     const deactivateCard = (card: Card) => {
       if (!card.liveVideo) return;
       card.liveHls?.destroy();
@@ -383,6 +495,7 @@ export default function SpiralCarousel({
       card.liveVideo = undefined;
       card.liveHls = undefined;
       card.liveTexture = undefined;
+      card.idleSince = undefined;
     };
 
     /* ── Fullscreen lightbox ──────────────────────────────────────────────── */
@@ -404,8 +517,15 @@ export default function SpiralCarousel({
     document.body.appendChild(fsVideo);
     document.body.appendChild(closeBtn);
 
+    /* The canvas fills a fixed, full-viewport host, so its box only moves
+     * when the viewport does. Reading it back from the DOM instead — which
+     * pointermove used to do on every event — forces a synchronous layout in
+     * the middle of a gesture, which is exactly when there is no time for
+     * one. Cached here and refreshed by resize().
+     */
+    let canvasRect = new DOMRect(0, 0, 1, 1);
+
     const cardScreenRect = (mesh: THREE.Mesh) => {
-      const canvasRect = canvas.getBoundingClientRect();
       const hw = CARD_W / 2;
       const hh = CARD_H / 2;
       let minX = Infinity,
@@ -533,11 +653,26 @@ export default function SpiralCarousel({
     const resize = () => {
       const { clientWidth: w, clientHeight: h } = host;
       if (!w || !h) return;
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      const mobile = w < MOBILE_WIDTH;
+      // A phone's device pixel ratio is routinely 3, and every one of those
+      // pixels runs the full card shader. 1.5 is still past the point the
+      // card edges read as soft rather than stepped.
+      renderer.setPixelRatio(
+        Math.min(window.devicePixelRatio, mobile ? 1.5 : 2),
+      );
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
-      camera.fov = w < 900 ? 45 : 35;
+      camera.fov = mobile ? 45 : 35;
       camera.updateProjectionMatrix();
+
+      verticalGap = mobile ? VERTICAL_GAP_MOBILE : VERTICAL_GAP;
+      centerY = centerYFor(verticalGap);
+      ramp = depthRamp(cardCount, verticalGap);
+      maxLive = mobile ? MAX_LIVE_MOBILE : MAX_LIVE;
+      for (const card of cards)
+        card.mesh.material.uniforms.uCenterY.value = centerY;
+
+      canvasRect = canvas.getBoundingClientRect();
       // Keep the open player filling the viewport through a resize; snap
       // rather than transition since this isn't a user-driven open/close.
       if (openCard) applyRect(fullscreenRect(), "0px");
@@ -584,16 +719,30 @@ export default function SpiralCarousel({
       downTime = performance.now();
       canvas.setPointerCapture(e.pointerId);
     };
-    const onPointerMove = (e: PointerEvent) => {
-      const rect = canvas.getBoundingClientRect();
+    const setPointerFrom = (e: PointerEvent) => {
       pointer.set(
-        ((e.clientX - rect.left) / rect.width) * 2 - 1,
-        -((e.clientY - rect.top) / rect.height) * 2 + 1,
+        ((e.clientX - canvasRect.left) / canvasRect.width) * 2 - 1,
+        -((e.clientY - canvasRect.top) / canvasRect.height) * 2 + 1,
       );
-      const mask = `radial-gradient(circle ${GRID_SPOT_RADIUS}px at ${e.clientX - rect.left}px ${e.clientY - rect.top}px, black, transparent)`;
-      gridSpot.style.maskImage = mask;
-      gridSpot.style.webkitMaskImage = mask;
-      gridSpot.style.opacity = "1";
+    };
+    const parkPointer = () => pointer.set(2, 2);
+
+    const onPointerMove = (e: PointerEvent) => {
+      /* Only a real pointer leaves a hover behind it. A finger that has been
+       * lifted has no position, but the events still carry the last one it
+       * touched — and left in `pointer` it becomes a fixed hot spot that
+       * every card brightens and zooms through as the spiral drifts past,
+       * which is not a hover at all, just a flicker.
+       */
+      if (e.pointerType === "mouse") {
+        setPointerFrom(e);
+        if (gridSpot) {
+          const mask = `radial-gradient(circle ${GRID_SPOT_RADIUS}px at ${e.clientX - canvasRect.left}px ${e.clientY - canvasRect.top}px, black, transparent)`;
+          gridSpot.style.maskImage = mask;
+          gridSpot.style.webkitMaskImage = mask;
+          gridSpot.style.opacity = "1";
+        }
+      }
       if (!dragging) return;
       push(-(e.clientY - lastPointerY) * DRAG_SENS);
       lastPointerY = e.clientY;
@@ -607,20 +756,17 @@ export default function SpiralCarousel({
       const moved = Math.hypot(e.clientX - downX, e.clientY - downY);
       const held = performance.now() - downTime;
       if (moved < CLICK_MOVE_THRESHOLD && held < CLICK_TIME_THRESHOLD) {
-        const rect = canvas.getBoundingClientRect();
-        pointer.set(
-          ((e.clientX - rect.left) / rect.width) * 2 - 1,
-          -((e.clientY - rect.top) / rect.height) * 2 + 1,
-        );
+        setPointerFrom(e);
         raycaster.setFromCamera(pointer, camera);
         const hit = raycaster.intersectObjects(meshes)[0]?.object;
         const card = cards.find((c) => c.mesh === hit);
         if (card) openVideo(card);
       }
+      if (e.pointerType !== "mouse") parkPointer();
     };
     const onPointerLeave = () => {
-      pointer.set(2, 2);
-      gridSpot.style.opacity = "0";
+      parkPointer();
+      if (gridSpot) gridSpot.style.opacity = "0";
     };
 
     canvas.addEventListener("wheel", onWheel, { passive: true });
@@ -636,6 +782,12 @@ export default function SpiralCarousel({
     const timer = new THREE.Timer();
     let elapsed = 0;
     let frame = 0;
+    let cursor = ""; // last value written to canvas.style.cursor
+    let titleShown = false; // ...and to the title pill, so neither is rewritten
+    // Scratch for the live-stream reconciliation, reused rather than
+    // reallocated: it runs several times a second, forever.
+    const candidates: Card[] = [];
+    let nextReconcile = 0;
 
     const tick = () => {
       frame = requestAnimationFrame(tick);
@@ -655,21 +807,26 @@ export default function SpiralCarousel({
 
       // The helix moves under a still pointer, so this has to re-run every
       // frame; it stays cheap because three rejects most meshes on their
-      // bounding sphere before touching a triangle.
-      raycaster.setFromCamera(pointer, camera);
-      const hovered =
-        dragging || frozen
-          ? undefined
-          : raycaster.intersectObjects(meshes)[0]?.object;
-      const hoveredCard = cards.find((c) => c.mesh === hovered);
-      canvas.style.cursor = dragging
-        ? "grabbing"
-        : hovered
-          ? "pointer"
-          : "grab";
+      // bounding sphere before touching a triangle. Skipped outright when the
+      // pointer is parked off-screen, which on a touch device is always.
+      const canHover =
+        !dragging && !frozen && pointer.x >= -1 && pointer.x <= 1;
+      let hovered: THREE.Object3D | undefined;
+      if (canHover) {
+        raycaster.setFromCamera(pointer, camera);
+        hovered = raycaster.intersectObjects(meshes)[0]?.object;
+      }
+      const hoveredCard = hovered
+        ? cards.find((c) => c.mesh === hovered)
+        : undefined;
 
-      const desired = new Set<Card>();
-      if (hoveredCard) desired.add(hoveredCard);
+      // Written on change only: a style write on a canvas every frame is a
+      // style recalculation the compositor did not need.
+      const wantCursor = dragging ? "grabbing" : hovered ? "pointer" : "grab";
+      if (wantCursor !== cursor) {
+        cursor = wantCursor;
+        canvas.style.cursor = cursor;
+      }
 
       for (const card of cards) {
         const { mesh } = card;
@@ -695,7 +852,7 @@ export default function SpiralCarousel({
         const angle = b * ANGLE_GAP;
         // Cards fly in from the axis and settle down into place.
         const radius = RADIUS * (1 - hidden / 2);
-        const y = b * VERTICAL_GAP + CENTER_Y + hidden * 1.5;
+        const y = b * verticalGap + centerY + hidden * 1.5;
 
         mesh.position.set(
           Math.cos(angle) * radius,
@@ -712,17 +869,17 @@ export default function SpiralCarousel({
 
         const ndcPoint = ndc.copy(mesh.position).project(camera);
         const ndcY = ndcPoint.y;
-        const depth = Math.abs(b * VERTICAL_GAP);
+        const depth = Math.abs(b * verticalGap);
         const fog = Math.max(
           THREE.MathUtils.smoothstep(Math.abs(ndcY), FOG_START, FOG_END),
-          THREE.MathUtils.smoothstep(depth, WRAP_FOG_START, WRAP_FOG_END),
+          THREE.MathUtils.smoothstep(depth, ramp.wrapFogStart, ramp.wrapFogEnd),
         );
         u.uFog.value = fog;
         u.uSwell.value = 1 + fog * FOG_SWELL;
         u.uFogDir.value = ndcY >= 0 ? 1 : -1;
         u.uOpacity.value =
           card.reveal *
-          (1 - THREE.MathUtils.smoothstep(depth, CUT_START, CUT_END)) *
+          (1 - THREE.MathUtils.smoothstep(depth, ramp.cutStart, ramp.cutEnd)) *
           (1 - card.hiding);
 
         // A card counts as "on screen" once its centre falls inside the NDC
@@ -732,7 +889,10 @@ export default function SpiralCarousel({
         const inViewport = card.liveVideo
           ? edge < VIEWPORT_DEACTIVATE
           : edge < VIEWPORT_ACTIVATE;
-        if (inViewport && u.uOpacity.value > 0.05) desired.add(card);
+        // The middle of the screen wins the streams; a hovered card is about
+        // to be opened, so it outranks everything.
+        card.priority = card === hoveredCard || card === openCard ? -1 : edge;
+        if (inViewport && u.uOpacity.value > 0.05) candidates.push(card);
       }
 
       // Uniforms above are current for this frame, so this check runs after
@@ -744,23 +904,100 @@ export default function SpiralCarousel({
         hu.uReveal.value > TITLE_REVEAL_MIN &&
         hu.uFog.value < TITLE_FOG_MAX &&
         hu.uOpacity.value > TITLE_OPACITY_MIN;
-      if (showTitle) titleLabel.textContent = hoveredCard!.title;
-      titleLabel.style.opacity = showTitle ? "1" : "0";
-      titleLabel.style.transform = `translate(-50%,${showTitle ? 0 : 6}px)`;
-
-      for (const card of cards) {
-        const shouldBeActive = desired.has(card);
-        if (shouldBeActive && !card.liveVideo) activateCard(card);
-        else if (!shouldBeActive && card.liveVideo) deactivateCard(card);
+      if (showTitle !== titleShown) {
+        titleShown = showTitle;
+        titleLabel.style.opacity = showTitle ? "1" : "0";
+        titleLabel.style.transform = `translate(-50%,${showTitle ? 0 : 6}px)`;
       }
+      if (showTitle) titleLabel.textContent = hoveredCard!.title;
+
+      reconcileStreams(candidates);
+      candidates.length = 0;
 
       renderer.render(scene, camera);
     };
+
+    /* Which cards get a live stream. Runs off the current frame's numbers but
+     * only every RECONCILE_MS — the decision is about what to spend the next
+     * fraction of a second on, and re-taking it 60 times a second is how a
+     * flick ends up tearing streams down and building them straight back.
+     */
+    const reconcileStreams = (inView: Card[]) => {
+      const now = performance.now();
+      if (now < nextReconcile) return;
+      nextReconcile = now + RECONCILE_MS;
+
+      inView.sort((a, b) => a.priority - b.priority);
+      const budget = Math.min(inView.length, maxLive);
+      for (const card of cards) card.wantsLive = false;
+      for (let i = 0; i < budget; i++) inView[i].wantsLive = true;
+
+      let starts = ACTIVATIONS_PER_TICK;
+      const busy = Math.abs(speed) > BUSY_SPEED;
+      for (const card of cards) {
+        if (card.wantsLive) {
+          card.idleSince = undefined;
+          if (card.liveVideo) resumeCard(card);
+          // Nothing is started mid-flick: by the time the manifest and first
+          // segment land the card is somewhere else entirely, and the work of
+          // building the stream lands on the frames that can least afford it.
+          else if (!busy && starts > 0) {
+            activateCard(card);
+            starts--;
+          }
+          continue;
+        }
+        // A card that lost its slot — off the edge, or simply out-ranked by
+        // one nearer the middle — is suspended rather than destroyed, and
+        // only torn down once it has stayed unwanted for the whole grace
+        // window. Coming straight back costs nothing that way.
+        if (!card.liveVideo) continue;
+        if (card.idleSince === undefined) card.idleSince = now;
+        suspendCard(card);
+        if (now - card.idleSince > LIVE_GRACE_MS && card !== openCard)
+          deactivateCard(card);
+      }
+    };
+
+    /* ── Idling ───────────────────────────────────────────────────────────
+     * Nothing here is worth a single frame of work when the canvas isn't on
+     * screen: a backgrounded tab keeps its video decoders and its WebGL
+     * context alive, and a spiral scrolled past keeps animating into a
+     * compositor layer nobody is looking at. Both stop the loop outright and
+     * hand back every stream.
+     */
+    let onScreen = true;
+    let running = true;
+    const setRunning = (next: boolean) => {
+      if (next === running) return;
+      running = next;
+      if (running) {
+        timer.update(); // discard the gap, so nothing jumps on the first frame
+        frame = requestAnimationFrame(tick);
+      } else {
+        cancelAnimationFrame(frame);
+        for (const card of cards) deactivateCard(card);
+      }
+    };
+    const syncRunning = () => setRunning(onScreen && !document.hidden);
+
+    const visibility = new IntersectionObserver(
+      ([entry]) => {
+        onScreen = entry.isIntersecting;
+        syncRunning();
+      },
+      { threshold: 0 },
+    );
+    visibility.observe(host);
+    document.addEventListener("visibilitychange", syncRunning);
+
     tick();
 
     return () => {
       cancelAnimationFrame(frame);
       observer.disconnect();
+      visibility.disconnect();
+      document.removeEventListener("visibilitychange", syncRunning);
       window.removeEventListener("keydown", onKeyDown);
       canvas.removeEventListener("wheel", onWheel);
       canvas.removeEventListener("pointerdown", onPointerDown);
@@ -786,7 +1023,7 @@ export default function SpiralCarousel({
       renderer.dispose();
       canvas.remove();
       gridBase.remove();
-      gridSpot.remove();
+      gridSpot?.remove();
       for (const bank of banks) bank.remove();
     };
   }, [videos]);
