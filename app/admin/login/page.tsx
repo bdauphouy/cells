@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -39,7 +40,15 @@ export default function AdminLoginPage() {
   };
 
   return (
-    <main className="dark flex min-h-screen items-center justify-center bg-background p-6">
+    <main className="dark flex min-h-dvh flex-col items-center justify-center gap-8 bg-background p-6">
+      <Image
+        src="/logo.svg"
+        alt="Logo"
+        width={140}
+        height={91}
+        className="h-10 w-auto"
+        priority
+      />
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle>Admin</CardTitle>

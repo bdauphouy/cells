@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import Image from "next/image";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -24,17 +23,11 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="h-full">
-        <Image
-          src="/logo.svg"
-          alt="Logo"
-          width={140}
-          height={91}
-          className="pointer-events-none fixed top-6 left-6 z-10 h-14 w-auto"
-          priority
-        />
-        {children}
-      </body>
+      {/* Each page places its own logo: the carousel wants it pinned over a
+          full-viewport canvas, the admin pages want it in normal flow above
+          scrolling content. A fixed one here would follow the admin page's
+          scroll and sit on top of its header. */}
+      <body className="min-h-full">{children}</body>
     </html>
   );
 }
