@@ -185,30 +185,27 @@ const CAMERA_Z_MOBILE = 9.2;
  * apart on a tall screen — the spiral stops reading as one strip. The angular
  * gap is the one that keeps cards from crossing, so only the climb is
  * shortened; see the no-crossing note below for what that costs.
+ *
+ * `depthRamp` sizes the whole dissolve off cardCount * verticalGap, so with
+ * the loop held at 10 clips this is the only lever left for how much of the
+ * helix reads as a staircase before cloud eats it — the clear:dissolve:cut
+ * split (in card-count terms) is fixed by cardCount alone, so widening the
+ * gap doesn't add steps, it gives the ones there more air and more world
+ * depth to climb through before wrapping. 0.55 puts the reachable depth
+ * (limit = 4.5 * verticalGap ≈ 2.47) where a 14-clip loop at the old 0.38
+ * packing landed — the count tried and found to read as a proper spiral
+ * rather than a fanned deck — instead of the 1.71 the tight packing gave.
  */
 const VERTICAL_GAP = 0.62;
-const VERTICAL_GAP_MOBILE = 0.38;
+const VERTICAL_GAP_MOBILE = 0.55;
 const MOBILE_WIDTH = 768;
 
-/* How many distinct clips the mobile spiral cycles through before looping —
- * see the note by `cardCount` for why fewer total cards is its own perf lever
- * on a phone, separate from how many of them are live at once.
- *
- * `depthRamp` sizes the whole dissolve off cardCount (limit grows with it),
- * so this number is also what decides how much of the helix reads as a
- * staircase before cloud eats it. At 10 the clear zone was only b=-2..2 —
- * five cards — dissolving over just two more before the hard cutoff, which
- * reads as a small fanned deck rather than something spiraling away. 14
- * gives seven cards clear (b=-3..3, since wrapFogStart lands past b=3.5)
- * and three dissolving into each bank before the cutoff, close to what the
- * uncapped loop (18) gave — nine clear, three dissolving — while still
- * cutting the total <video>/hls.js footprint by more than a fifth. It also
- * lines up with MAX_LIVE_MOBILE: that count was already trusted as a safe
- * concurrent-decode budget for this device class, so a loop no longer than
- * it asks nothing new of the decoder even if every card in it went live at
- * once.
- */
-const CARD_COUNT_MOBILE = 14;
+// How many distinct clips the mobile spiral cycles through before looping —
+// see the note by `cardCount` for why fewer total cards is its own perf lever
+// on a phone, separate from how many of them are live at once. Held here
+// rather than raised, since VERTICAL_GAP_MOBILE above is now doing the work
+// of making the loop read as a spiral.
+const CARD_COUNT_MOBILE = 10;
 
 /* No two cards may ever intersect. A curled card reaches its neighbour's plane
  * at (radius + CURL)*cos(a) + (CARD_W/2)*sin(a) - radius, which only stays
@@ -217,9 +214,9 @@ const CARD_COUNT_MOBILE = 14;
  * apart do land back inside that wedge, since a multiple of ANGLE_GAP comes
  * back near a multiple of 2*PI there, but by then they sit far enough apart
  * vertically to clear CARD_H at full swell (2.55 world units) — 4.3 at the
- * desktop climb, and 2.66 at the shorter mobile one, which is what floors
- * VERTICAL_GAP_MOBILE. The speed distortions in the shader are bounded so
- * they preserve this margin.
+ * desktop climb, and 3.85 at the mobile one, comfortably past the 2.55 floor
+ * (7 * verticalGap must clear it, so verticalGap ≳ 0.364 at minimum). The
+ * speed distortions in the shader are bounded so they preserve this margin.
  */
 
 /* The card whose plane squarely faces the camera is the one a quarter turn
