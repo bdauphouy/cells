@@ -3,7 +3,7 @@
 import fragmentShader from "@/lib/shaders/card.frag.glsl";
 import vertexShader from "@/lib/shaders/card.vert.glsl";
 import Hls from "hls.js";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 
 export type ResolvedCard = {
@@ -189,13 +189,17 @@ const CAMERA_Z_MOBILE = 9.2;
  * `depthRamp` sizes the whole dissolve off cardCount * verticalGap, so
  * widening the gap gives every card more air and more world depth to climb
  * through before wrapping, independent of how many cards there are. 0.55
- * was tuned against a loop held to 10 clips — back to the library's full
- * count below, the same gap reaches proportionally further out before cloud
- * eats it, which is untested territory worth an eye once it's running.
+ * was tuned against a loop held to 10 clips; CARD_COUNT_MOBILE below has
+ * since settled at 14, which widens that dissolve zone proportionally and is
+ * still worth an eye rather than assumed correct.
  */
 const VERTICAL_GAP = 0.62;
 const VERTICAL_GAP_MOBILE = 0.55;
 const MOBILE_WIDTH = 768;
+// Matches MAX_LIVE_MOBILE: past that many cards in the loop, the live-stream
+// budget was already refusing the rest a decoder, so they can only ever show
+// a poster — no reason to carry their <video> element and hls.js instance.
+const CARD_COUNT_MOBILE = 14;
 
 /* No two cards may ever intersect. A curled card reaches its neighbour's plane
  * at (radius + CURL)*cos(a) + (CARD_W/2)*sin(a) - radius, which only stays
@@ -429,6 +433,11 @@ export default function SpiralCarousel({
   cards: ResolvedCard[];
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  // True once the WebGL scene has painted its first frame — shader
+  // compilation, geometry and the per-card texture setup are all synchronous
+  // work ahead of that, and slow enough on a phone to be worth covering with
+  // a spinner rather than showing a blank brand-colored screen.
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -536,14 +545,13 @@ export default function SpiralCarousel({
       return texture;
     };
 
-    // The library drives the card count directly: fewer than MIN_CARDS videos
-    // loop round to reach it, MIN_CARDS or more get one card each. Mobile
-    // previously capped this lower — fewer <video> elements and hls.js
-    // instances ever existing at once, not just fewer live at a time — but
-    // that cost the spiral its shape at the old climb, so it's back to the
-    // full count on every device while VERTICAL_GAP_MOBILE and the live-
-    // stream budget carry the phone-specific cost instead.
-    const cardCount = videos.length;
+    // The library drives the card count directly on desktop. Mobile caps it
+    // at CARD_COUNT_MOBILE — every card in the loop gets its own <video>
+    // element regardless of whether it ever wins a decoder, just from sitting
+    // in the DOM waiting its turn.
+    const cardCount = lowPower
+      ? Math.min(videos.length, CARD_COUNT_MOBILE)
+      : videos.length;
 
     // Layout that follows the viewport rather than the device, filled in by
     // the first resize() below and kept current from then on.
@@ -1065,6 +1073,7 @@ export default function SpiralCarousel({
     const timer = new THREE.Timer();
     let elapsed = 0;
     let frame = 0;
+    let firstFrame = true;
     let cursor = ""; // last value written to canvas.style.cursor
     let titleShown = false; // ...and to the title pill, so neither is rewritten
     // Scratch for the live-stream reconciliation, reused rather than
@@ -1212,6 +1221,10 @@ export default function SpiralCarousel({
       candidates.length = 0;
 
       renderer.render(scene, camera);
+      if (firstFrame) {
+        firstFrame = false;
+        setReady(true);
+      }
     };
 
     /* Which cards get a live stream. Runs off the current frame's numbers but
@@ -1339,9 +1352,16 @@ export default function SpiralCarousel({
   }, [videos]);
 
   return (
-    <div
-      ref={hostRef}
-      className="relative isolate min-h-0 w-full flex-1 touch-none overflow-hidden bg-brand"
-    />
+    <div className="relative min-h-0 w-full flex-1 overflow-hidden bg-brand">
+      <div
+        ref={hostRef}
+        className="absolute inset-0 isolate touch-none overflow-hidden"
+      />
+      {!ready && (
+        <div className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center">
+          <div className="h-10 w-10 animate-spin rounded-full border-2 border-white/40 border-t-white" />
+        </div>
+      )}
+    </div>
   );
 }
