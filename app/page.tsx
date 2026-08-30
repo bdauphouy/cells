@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 export default async function Home() {
   const cards = await resolveCards();
   return (
-    <main className="flex h-full min-h-0 flex-1 flex-col overflow-hidden bg-brand">
+    <main className="fixed inset-0 flex flex-col overflow-hidden bg-brand">
       <SpiralCarousel cards={cards} />
     </main>
   );
