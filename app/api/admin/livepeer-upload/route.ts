@@ -1,3 +1,4 @@
+import type { NextRequest } from "next/server";
 import { livepeer } from "@/lib/livepeer";
 
 // Server only mints the direct-upload endpoint; the actual video bytes go
@@ -31,4 +32,20 @@ export async function POST(request: Request) {
       { status: 502 },
     );
   }
+}
+
+// Cancels an upload or in-progress encode. This asset was never saved to the
+// library — it only exists as a Livepeer asset the client is still polling —
+// so there's no library entry to remove, just the asset itself.
+export async function DELETE(request: NextRequest) {
+  const assetId = request.nextUrl.searchParams.get("assetId");
+  if (!assetId) {
+    return Response.json({ error: "assetId required" }, { status: 400 });
+  }
+
+  await livepeer()
+    .asset.delete(assetId)
+    .catch((err) => console.error("Failed to cancel Livepeer asset", err));
+
+  return Response.json({ ok: true });
 }
