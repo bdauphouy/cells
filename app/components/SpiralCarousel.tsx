@@ -7,29 +7,39 @@ import { useEffect, useRef } from "react";
 import * as THREE from "three";
 
 export type ResolvedCard = {
-  playbackId: string;
+  hlsUrl: string;
+  posterUrl?: string;
   aspectRatio: string;
   title: string;
 };
 
 /* ── Video source ──────────────────────────────────────────────────────────
- * Served from Mux as adaptive HLS. Safari plays an .m3u8 natively through
- * `src`; every other engine needs hls.js to feed the stream into the same
- * plain <video> element via MediaSource — so a video element stays an
+ * Served from Livepeer as adaptive HLS. Safari plays an .m3u8 natively
+ * through `src`; every other engine needs hls.js to feed the stream into the
+ * same plain <video> element via MediaSource — so a video element stays an
  * ordinary <video> either way, which is what lets THREE.VideoTexture read it
- * at all (a wrapper like <mux-player> hides its <video> in shadow DOM, out of
- * reach).
+ * at all (a player wrapper would hide its <video> in shadow DOM, out of
+ * reach). URLs come resolved from Livepeer's playback-info endpoint rather
+ * than templated from a playback id, which Livepeer warns against.
  */
-const streamUrl = (playbackId: string) =>
-  `https://stream.mux.com/${playbackId}.m3u8`;
-const posterUrl = (playbackId: string) =>
-  `https://image.mux.com/${playbackId}/thumbnail.jpg?width=640`;
+
+// hls.js's cold-start bandwidth guess (its default abrEwmaDefaultEstimate)
+// is 500 Kbps, below the bottom rung Livepeer generates (~770 Kbps for a
+// portrait clip) — so every fresh Hls instance starts at the lowest
+// rendition no matter the real connection speed, then climbs once it's
+// measured actual segment downloads. A fresh instance is created on every
+// card activation and every fullscreen open, so that low-then-better dip
+// was repeating constantly rather than happening once. Assuming a decent
+// connection up front (above the top rung, ~2.2 Mbps) starts at the best
+// rendition immediately; ABR still steps down for anyone who's actually
+// slower.
+const INITIAL_BANDWIDTH_ESTIMATE = 3_000_000;
 
 function attachHls(el: HTMLVideoElement, src: string): Hls | null {
   el.crossOrigin = "anonymous"; // cross-origin now; without this the WebGL
   // texture upload throws a tainted-canvas security error.
   if (Hls.isSupported()) {
-    const hls = new Hls();
+    const hls = new Hls({ abrEwmaDefaultEstimate: INITIAL_BANDWIDTH_ESTIMATE });
     hls.on(Hls.Events.ERROR, (_event, data) => {
       console.error("hls.js error", data);
     });
@@ -134,7 +144,7 @@ const TITLE_OPACITY_MIN = 0.9;
 /* ── Live video activation ────────────────────────────────────────────────
  * Every card has its own clip now, so decoding all of them at once isn't an
  * option — bandwidth and browser decode limits both break well before 18
- * concurrent streams. Each card shows a static Mux thumbnail by default and
+ * concurrent streams. Each card shows a static thumbnail by default and
  * only gets a real <video> + hls.js decode once it's actually on screen (or
  * hovered, which implies on screen too). Cards spend most of the spiral off
  * in the cloud banks at either end, so only a handful are ever live at once
@@ -175,7 +185,7 @@ type Card = {
   reveal: number;
   hover: number;
   hiding: number;
-  playbackId: string;
+  hlsUrl: string;
   title: string;
   posterTexture: THREE.Texture;
   aspectW: number;
@@ -264,6 +274,16 @@ export default function SpiralCarousel({
 
     const textureLoader = new THREE.TextureLoader();
 
+    // Livepeer doesn't guarantee a thumbnail for every asset, so a card
+    // without one shows a flat fog-toned fill until its video activates.
+    const makeFallbackTexture = () => {
+      const { r, g, b } = fogColor;
+      const pixel = new Uint8Array([r * 255, g * 255, b * 255, 255]);
+      const texture = new THREE.DataTexture(pixel, 1, 1);
+      texture.needsUpdate = true;
+      return texture;
+    };
+
     // The library drives the card count directly: fewer than MIN_CARDS
     // videos loop round to reach it, MIN_CARDS or more get one card each.
     const cardCount = videos.length;
@@ -272,7 +292,9 @@ export default function SpiralCarousel({
     for (let i = 0; i < cardCount; i++) {
       const video = videos[i];
       const [aspectW, aspectH] = parseAspect(video.aspectRatio);
-      const posterTexture = textureLoader.load(posterUrl(video.playbackId));
+      const posterTexture = video.posterUrl
+        ? textureLoader.load(video.posterUrl)
+        : makeFallbackTexture();
       posterTexture.colorSpace = THREE.SRGBColorSpace;
 
       const material = new THREE.ShaderMaterial({
@@ -310,7 +332,7 @@ export default function SpiralCarousel({
         reveal: 0,
         hover: 0,
         hiding: 0,
-        playbackId: video.playbackId,
+        hlsUrl: video.hlsUrl,
         title: video.title,
         posterTexture,
         aspectW,
@@ -329,7 +351,7 @@ export default function SpiralCarousel({
       el.style.cssText =
         "position:absolute;width:1px;height:1px;opacity:0;pointer-events:none";
       host.appendChild(el);
-      const hls = attachHls(el, streamUrl(card.playbackId));
+      const hls = attachHls(el, card.hlsUrl);
       void el.play().catch(() => {});
 
       const texture = new THREE.VideoTexture(el);
@@ -452,7 +474,7 @@ export default function SpiralCarousel({
       fsVideo.style.pointerEvents = "auto";
 
       fsHls?.destroy();
-      fsHls = attachHls(fsVideo, streamUrl(card.playbackId));
+      fsHls = attachHls(fsVideo, card.hlsUrl);
       fsVideo.currentTime = card.liveVideo?.currentTime ?? 0;
       fsVideo.muted = false;
       void fsVideo.play().catch(() => {});
