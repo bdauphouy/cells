@@ -193,8 +193,22 @@ const MOBILE_WIDTH = 768;
 /* How many distinct clips the mobile spiral cycles through before looping —
  * see the note by `cardCount` for why fewer total cards is its own perf lever
  * on a phone, separate from how many of them are live at once.
+ *
+ * `depthRamp` sizes the whole dissolve off cardCount (limit grows with it),
+ * so this number is also what decides how much of the helix reads as a
+ * staircase before cloud eats it. At 10 the clear zone was only b=-2..2 —
+ * five cards — dissolving over just two more before the hard cutoff, which
+ * reads as a small fanned deck rather than something spiraling away. 14
+ * gives seven cards clear (b=-3..3, since wrapFogStart lands past b=3.5)
+ * and three dissolving into each bank before the cutoff, close to what the
+ * uncapped loop (18) gave — nine clear, three dissolving — while still
+ * cutting the total <video>/hls.js footprint by more than a fifth. It also
+ * lines up with MAX_LIVE_MOBILE: that count was already trusted as a safe
+ * concurrent-decode budget for this device class, so a loop no longer than
+ * it asks nothing new of the decoder even if every card in it went live at
+ * once.
  */
-const CARD_COUNT_MOBILE = 10;
+const CARD_COUNT_MOBILE = 14;
 
 /* No two cards may ever intersect. A curled card reaches its neighbour's plane
  * at (radius + CURL)*cos(a) + (CARD_W/2)*sin(a) - radius, which only stays
