@@ -226,12 +226,11 @@ const centerYFor = (verticalGap: number) =>
 const EASING = 0.1;
 const DECAY = 0.9;
 const IDLE_SPEED = 0.0022;
-const MAX_SPEED = 0.85;
-const WHEEL_SENS = 0.00016;
+const MAX_SPEED = 0.55;
+const WHEEL_SENS = 0.0001;
 /* A thumb swipe crosses most of a phone screen in one flick, so the desktop
  * pixels-to-cards rate sends the spiral past several cards at once — too fast
- * to read, and fast enough to keep tripping the scroll-pause gate that holds
- * new streams back (see SCROLL_PAUSE_FRACTION).
+ * to read.
  *
  * Slower still than that first cut: a card is marked a live-stream candidate
  * while it's still mostly hazy (see the fog gate around `candidates.push`),
@@ -241,9 +240,9 @@ const WHEEL_SENS = 0.00016;
  * fetch plus a first segment — so the stream was still spinning up when the
  * card arrived. The cap below roughly doubles that window.
  */
-const DRAG_SENS = 0.0024;
-const DRAG_SENS_MOBILE = 0.0008;
-const MAX_SPEED_MOBILE = 0.3;
+const DRAG_SENS = 0.0016;
+const DRAG_SENS_MOBILE = 0.00055;
+const MAX_SPEED_MOBILE = 0.2;
 
 /* ── Distortion ──────────────────────────────────────────────────────────── */
 const CURL = 0.18; // how far the middle of a card bulges outward, always on
@@ -361,31 +360,12 @@ const MAX_LIVE_MOBILE = 14;
 
 /* Reconciling at 60Hz meant a fast flick tore down and rebuilt streams every
  * few frames, and building one is expensive enough (MediaSource attach,
- * manifest fetch, first segment) to be felt as a stutter. Three things keep
- * that from happening: decide at 10Hz rather than every frame, hold new
- * streams back (and pause the ones already running) while the spiral is
- * moving fast enough that nothing on it can be read anyway, and let a card
- * that has left keep its stream (paused) long enough to cover a flick and
- * its coast, so coming back costs nothing.
+ * manifest fetch, first segment) to be felt as a stutter. Deciding at 10Hz
+ * rather than every frame, and letting a card that has left keep its stream
+ * (paused) long enough to cover a flick and its coast, is what keeps that
+ * from happening — coming back costs nothing.
  */
 const RECONCILE_MS = 100;
-/* Fraction of maxSpeed above which live cards stop decoding rather than start
- * new ones: WHIP already smears anything moving this fast past legibility
- * (see the constant itself), so a card playing through a fast flick is
- * spending decode and texture-upload work — real cost, on the very frames
- * input handling and the spiral's own easing need most — on frames nobody
- * can read. Already-live cards are paused the same way an off-edge card is,
- * not torn down, so a flick that slows back down resumes for free.
- *
- * A fraction of maxSpeed rather than a fixed cards/frame figure: the old
- * fixed threshold (BUSY_SPEED = 0.3) sat exactly at MAX_SPEED_MOBILE, so it
- * could never trip on a phone — mobile's speed cap already tops out at the
- * threshold meant to gate it. Scaling with maxSpeed makes the gate mean the
- * same thing on both device classes: motion blur past the point of reading,
- * not a specific number tuned to whichever device happened to be capped at
- * it.
- */
-const SCROLL_PAUSE_FRACTION = 0.5;
 const LIVE_GRACE_MS = 2500; // a departed card keeps its stream this long
 /* Several at a time rather than one: at 10Hz, one-at-a-time took over a second
  * to fill a phone's worth of cards, which is the whole of a first impression
@@ -1250,17 +1230,10 @@ export default function SpiralCarousel({
       for (let i = 0; i < budget; i++) inView[i].wantsLive = true;
 
       let starts = ACTIVATIONS_PER_TICK;
-      const scrolling = Math.abs(speed) > maxSpeed * SCROLL_PAUSE_FRACTION;
       for (const card of cards) {
         if (card.wantsLive) {
           card.idleSince = undefined;
-          // Nothing is decoded mid-flick, running or not: a card already
-          // playing is paused (see SCROLL_PAUSE_FRACTION) rather than spend
-          // decode on a frame no one can read, and by the time a fresh
-          // manifest and first segment would land the card is somewhere else
-          // entirely, so a new stream isn't started either.
-          if (scrolling) suspendCard(card);
-          else if (card.liveVideo) resumeCard(card);
+          if (card.liveVideo) resumeCard(card);
           else if (starts > 0) {
             activateCard(card);
             starts--;
