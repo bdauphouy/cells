@@ -93,12 +93,24 @@ const levelCapFor = (
   return cap === -1 ? cheapest : cap;
 };
 
-type HlsOptions = { maxBitrate: number; maxHeight: number; card?: boolean };
+type HlsOptions = {
+  maxBitrate: number;
+  maxHeight: number;
+  card?: boolean;
+  /* Where playback should begin. Handed to hls.js as config rather than set
+   * on the element afterwards: assigning `currentTime` to a MediaSource that
+   * has nothing buffered yet is a seek, so hls.js fetches a fragment at zero,
+   * throws it away, and fetches another at the real position — two downloads
+   * and a stall, landing on the frames the open animation needs. As config it
+   * simply picks the right first fragment. -1 is the library's "from the
+   * start" sentinel. */
+  startPosition?: number;
+};
 
 function attachHls(
   el: HTMLVideoElement,
   src: string,
-  { maxBitrate, maxHeight, card = false }: HlsOptions,
+  { maxBitrate, maxHeight, card = false, startPosition = -1 }: HlsOptions,
 ): Hls | null {
   el.crossOrigin = "anonymous"; // cross-origin now; without this the WebGL
   // texture upload throws a tainted-canvas security error.
@@ -110,7 +122,7 @@ function attachHls(
             maxBufferLength: CARD_BUFFER_S,
             backBufferLength: 0,
           }
-        : { abrEwmaDefaultEstimate: INITIAL_BANDWIDTH_ESTIMATE },
+        : { abrEwmaDefaultEstimate: INITIAL_BANDWIDTH_ESTIMATE, startPosition },
     );
     hls.on(Hls.Events.ERROR, (_event, data) => {
       console.error("hls.js error", data);
@@ -125,8 +137,17 @@ function attachHls(
     return hls;
   }
   // Safari (and anything else with native HLS support): no library needed.
-  // Its own player picks the rendition and won't take a cap from us.
+  // Its own player picks the rendition and won't take a cap from us — the
+  // start position it will take, but only once it knows the duration.
   el.src = src;
+  if (startPosition > 0)
+    el.addEventListener(
+      "loadedmetadata",
+      () => {
+        el.currentTime = startPosition;
+      },
+      { once: true },
+    );
   return null;
 }
 
@@ -226,30 +247,42 @@ const SQUASH = 0.4; // vertical pinch under speed, capped in the shader
  * dissolving mid-viewport and the other already gone over the edge. */
 const FOG_START = 0.55; // |ndc y| where the haze starts taking the card...
 const FOG_END = 1.05; // ...and where it has taken all of it
+
 /* The same dissolve keyed to raw helix height, taken as a floor, so a card
  * that reaches the wrap without leaving the screen — a far one on a tall
  * viewport — still goes to cloud rather than simply stopping.
  *
- * These have to finish inside the depth the helix actually reaches, which is
- * half the card count times the climb — otherwise a card is still solid when
- * it teleports to the other end. A short library or the shorter mobile climb
- * both cut that depth down, so the ramp is squeezed to fit when it has to;
- * `depthRamp` keeps the four thresholds in the same proportion either way.
+ * Written as fractions of the depth a card is fully gone by, rather than as
+ * world distances squeezed to fit inside it. The distinction is what the top
+ * of a phone screen turned on. The screen-space ramp above is symmetric in
+ * |ndc y| while the helix hangs below the origin, so its two ends reach very
+ * different heights: on a phone the bottom of the spiral gets to about -0.9
+ * and hazes properly, and the top only reaches +0.77 — never leaving the
+ * ramp's first third. Everything visible at the top was therefore left to
+ * this ramp, which as absolute distances landed at 81%-98% of the reachable
+ * depth: a dissolve a slot and a half wide, finishing after the hard cutoff
+ * had already started fading the card out. What you saw was the fade.
+ *
+ * As fractions it spans the same share of the spiral whatever the climb, so
+ * the dissolve is three or four cards deep at both ends and on both device
+ * classes, and the cutoff begins only once the vapour has finished — it is
+ * insurance that the wrap point stays hidden, not part of the effect.
+ * Desktop is unchanged in practice: its screen-space ramp still reaches 1
+ * well before this one contributes anything.
  */
-const WRAP_FOG_START = 3.8;
-const WRAP_FOG_END = 4.6;
-const CUT_START = 4.4; // hard cutoff, insurance behind the dissolve: by here
-const CUT_END = 4.7; // nothing is left to see, so the wrap point stays hidden
+const WRAP_FOG_START = 0.55;
+const WRAP_FOG_END = 0.94;
+const CUT_END = 1;
 
 const depthRamp = (cardCount: number, verticalGap: number) => {
-  // The deepest a card ever gets: `b` runs to ±(cardCount - 1)/2 slots.
+  // The deepest a card is allowed to still be visible at: `b` runs from
+  // -(cardCount - 1)/2 slots, and anything past that is fully cut already.
   const limit = ((cardCount - 1) / 2) * verticalGap;
-  const scale = Math.min(1, limit / CUT_END);
   return {
-    wrapFogStart: WRAP_FOG_START * scale,
-    wrapFogEnd: WRAP_FOG_END * scale,
-    cutStart: CUT_START * scale,
-    cutEnd: CUT_END * scale,
+    wrapFogStart: WRAP_FOG_START * limit,
+    wrapFogEnd: WRAP_FOG_END * limit,
+    cutStart: WRAP_FOG_END * limit,
+    cutEnd: CUT_END * limit,
   };
 };
 
@@ -294,29 +327,40 @@ const VIEWPORT_DEACTIVATE = 1.08; // ...and must drift back past to stop — the
 const VIEWPORT_ACTIVATE_MOBILE = 1.1;
 const VIEWPORT_DEACTIVATE_MOBILE = 1.3;
 
-/* "Only a handful at once" turned out to need saying out loud. A tall phone
- * screen puts far more of the helix inside the NDC square than a desktop one
- * does, and every live card is a separate MediaSource decode plus a full
- * texture upload per rendered frame. Past the device's decoder budget streams
- * stall and hand back black or half-decoded frames, which is what makes the
- * cards visibly darken and then recover. So the count is capped outright and
- * the budget goes to the cards nearest the middle of the screen.
+/* Every card you can see is meant to be playing. The cap exists only so a
+ * pathological viewport can't ask for an unbounded number of decoders — it is
+ * set above the number of cards that clear the cloud banks at either end (13
+ * on a phone, 9 on a desktop, over an 18-card spiral), so in practice it never
+ * binds and the whole visible stretch of the spiral is live at once.
+ *
+ * This is deliberately more than the device would choose for itself. Each live
+ * card is a MediaSource decode, and mobile takes the bottom rung of the ladder
+ * (see CARD_MAX_BITRATE_MOBILE) precisely so a dozen of them fit; the texture
+ * uploads are already paid only on frames the decoder actually produced, since
+ * three's VideoTexture drives them off requestVideoFrameCallback rather than
+ * off the render loop. If a device does run out of decoders the symptom is
+ * cards stalling on a half-decoded frame, and these are the numbers to lower.
  */
-const MAX_LIVE = 6;
-const MAX_LIVE_MOBILE = 3;
+const MAX_LIVE = 10;
+const MAX_LIVE_MOBILE = 14;
 
 /* Reconciling at 60Hz meant a fast flick tore down and rebuilt streams every
  * few frames, and building one is expensive enough (MediaSource attach,
  * manifest fetch, first segment) to be felt as a stutter. Three things keep
- * that from happening: decide at 10Hz rather than every frame, never start a
- * stream while the spiral is moving fast enough that the card will be gone
- * before it plays, and let a card that has left keep its stream (paused) for
- * a moment in case it comes straight back.
+ * that from happening: decide at 10Hz rather than every frame, hold new
+ * streams back while the spiral is moving fast enough that nothing on it can
+ * be read anyway, and let a card that has left keep its stream (paused) long
+ * enough to cover a flick and its coast, so coming back costs nothing.
  */
 const RECONCILE_MS = 100;
-const BUSY_SPEED = 0.1; // cards/frame above which new streams wait
-const LIVE_GRACE_MS = 1000; // a departed card keeps its stream this long
-const ACTIVATIONS_PER_TICK = 1; // ...and they start one at a time
+const BUSY_SPEED = 0.3; // cards/frame above which new streams wait
+const LIVE_GRACE_MS = 2500; // a departed card keeps its stream this long
+/* Several at a time rather than one: at 10Hz, one-at-a-time took over a second
+ * to fill a phone's worth of cards, which is the whole of a first impression
+ * spent watching posters. Still not all at once — a dozen MediaSource attaches
+ * in a single tick is one long frame, and this spreads them over three.
+ */
+const ACTIVATIONS_PER_TICK = 4;
 
 /* ── Fullscreen ────────────────────────────────────────────────────────────
  * A tap grows the card from its exact on-screen rect into a real
@@ -335,6 +379,7 @@ const GRID_SPOT_RADIUS = 320; // px, spotlight falloff radius
 
 const OPEN_MS = 600;
 const CLOSE_MS = 480;
+const CARD_RADIUS_PX = 14; // how rounded the player looks while still card-sized
 const SWAP_MS = 150; // crossfade between the curled mesh and the flat player
 const CLOSE_FADE_LEAD_MS = 120; // finish the close fade this long before the shrink stops moving
 const HIDE_EASING = 0.25; // per-frame pull toward the crossfade target
@@ -505,6 +550,19 @@ export default function SpiralCarousel({
         ? textureLoader.load(video.posterUrl)
         : makeFallbackTexture();
       posterTexture.colorSpace = THREE.SRGBColorSpace;
+      /* Sampled exactly like the video texture that replaces it, so the swap
+       * is a swap and not a change of look. TextureLoader's defaults are a
+       * mipmapped minFilter, and gl.generateMipmap box-filters the stored
+       * bytes — which for an sRGB texture means averaging gamma-encoded
+       * values, so every level down comes out darker than a correct average.
+       * A card is a postage stamp: the sampler sits a level or two down the
+       * chain there, well into the darkening, while the video texture has no
+       * chain at all. That is the dark filter that lifts the moment a clip
+       * starts — the same frames, correctly exposed for the first time.
+       */
+      posterTexture.minFilter = THREE.LinearFilter;
+      posterTexture.magFilter = THREE.LinearFilter;
+      posterTexture.generateMipmaps = false;
 
       const material = new THREE.ShaderMaterial({
         vertexShader,
@@ -624,8 +682,18 @@ export default function SpiralCarousel({
     const fsVideo = document.createElement("video");
     fsVideo.controls = true;
     fsVideo.playsInline = true;
+    /* Laid out once at its fullscreen size and never resized again: the open
+     * and close animations move it with a transform instead. left/top/width/
+     * height are layout properties, so animating them puts a layout, a paint
+     * and a re-fit of the video frame on the main thread for every frame of
+     * the transition — and the main thread is, at that exact moment, also
+     * building a fresh hls.js stream. A transform belongs to the compositor,
+     * which keeps animating it at full rate no matter how busy the main
+     * thread gets. `transform-origin` at the top-left is what lets a plain
+     * translate+scale map the fullscreen box onto any rect on screen.
+     */
     fsVideo.style.cssText =
-      "position:fixed;z-index:41;display:none;object-fit:cover;border-radius:14px;box-shadow:0 30px 80px rgba(0,0,0,0.6);outline:none;";
+      "position:fixed;z-index:41;display:none;object-fit:cover;box-shadow:0 30px 80px rgba(0,0,0,0.6);outline:none;transform-origin:0 0;will-change:transform;";
     let fsHls: Hls | null = null;
     const closeBtn = document.createElement("button");
     closeBtn.setAttribute("aria-label", "Close video");
@@ -683,19 +751,44 @@ export default function SpiralCarousel({
       return { left: (vw - width) / 2, top: (vh - height) / 2, width, height };
     };
 
-    const applyRect = (
-      rect: { left: number; top: number; width: number; height: number },
-      radius: string,
-    ) => {
-      fsVideo.style.left = `${rect.left}px`;
-      fsVideo.style.top = `${rect.top}px`;
-      fsVideo.style.width = `${rect.width}px`;
-      fsVideo.style.height = `${rect.height}px`;
-      fsVideo.style.borderRadius = radius;
+    // The box the player is actually laid out in — always the fullscreen one.
+    // Every other size it appears at is that box under a transform.
+    const fsBox = { left: 0, top: 0, width: 1, height: 1 };
+
+    const layoutFullscreen = () => {
+      Object.assign(fsBox, fullscreenRect());
+      fsVideo.style.left = `${fsBox.left}px`;
+      fsVideo.style.top = `${fsBox.top}px`;
+      fsVideo.style.width = `${fsBox.width}px`;
+      fsVideo.style.height = `${fsBox.height}px`;
+    };
+
+    // Maps the laid-out fullscreen box onto an arbitrary screen rect.
+    const placeOver = (rect: {
+      left: number;
+      top: number;
+      width: number;
+      height: number;
+    }) => {
+      const sx = rect.width / fsBox.width;
+      const sy = rect.height / fsBox.height;
+      fsVideo.style.transform =
+        `translate(${rect.left - fsBox.left}px,${rect.top - fsBox.top}px)` +
+        ` scale(${sx},${sy})`;
+      // The radius is drawn in the player's own (fullscreen) space and then
+      // shrunk along with everything else, so it has to be divided back out
+      // to still *look* like the card's 14px while the player is card-sized.
+      fsVideo.style.borderRadius = `${CARD_RADIUS_PX / Math.min(sx, sy)}px`;
+    };
+
+    const placeFullscreen = () => {
+      fsVideo.style.transform = "translate(0px,0px) scale(1,1)";
+      fsVideo.style.borderRadius = "0px";
     };
 
     let openCard: Card | null = null;
     let mediaOpacity = 0; // crossfade target for fsVideo; the mesh fades to match
+    let coverTimer = 0;
 
     const openVideo = (card: Card) => {
       if (openCard) return;
@@ -704,7 +797,8 @@ export default function SpiralCarousel({
       frozen = true;
 
       fsVideo.style.transition = "none";
-      applyRect(cardScreenRect(card.mesh), "14px");
+      layoutFullscreen(); // reads openCard's aspect, so it goes after the assign
+      placeOver(cardScreenRect(card.mesh));
       fsVideo.style.opacity = "0";
       backdrop.style.display = "block";
       fsVideo.style.display = "block";
@@ -712,23 +806,40 @@ export default function SpiralCarousel({
       backdrop.style.pointerEvents = "auto";
       fsVideo.style.pointerEvents = "auto";
 
+      /* Nothing on the spiral is visible from here — the backdrop is on its
+       * way to opaque black over all of it. Every card's decoder is therefore
+       * work with no viewer, and it is competing for the main thread with the
+       * fullscreen stream being built on the very frames the open animation
+       * runs on. Paused rather than torn down: the hls.js instances and their
+       * buffers survive, so closing brings the spiral straight back instead of
+       * rebuilding a dozen streams. The render loop itself stops once the
+       * backdrop has finished covering it; see `covered`.
+       */
+      for (const other of cards) suspendCard(other);
+      window.clearTimeout(coverTimer);
+      coverTimer = window.setTimeout(() => {
+        covered = true;
+        syncRunning();
+      }, OPEN_MS);
+
       fsHls?.destroy();
       // Fullscreen: the top rung is the whole point, so both limits are set
-      // past anything a ladder is likely to hold.
+      // past anything a ladder is likely to hold. Picking up where the card
+      // left off is a config value, not a seek — see HlsOptions.startPosition.
       fsHls = attachHls(fsVideo, card.hlsUrl, {
         maxBitrate: Infinity,
         maxHeight: Infinity,
+        startPosition: card.liveVideo?.currentTime ?? -1,
       });
-      fsVideo.currentTime = card.liveVideo?.currentTime ?? 0;
       fsVideo.muted = false;
       void fsVideo.play().catch(() => {});
 
-      // Force layout so the browser commits the start rect before it
-      // transitions to the end rect, instead of collapsing both into one.
+      // Force a style flush so the browser commits the start transform before
+      // it transitions to the end one, instead of collapsing both into one.
       fsVideo.getBoundingClientRect();
       requestAnimationFrame(() => {
-        fsVideo.style.transition = `opacity ${SWAP_MS}ms ease, left ${OPEN_MS}ms cubic-bezier(0.22,1,0.36,1), top ${OPEN_MS}ms cubic-bezier(0.22,1,0.36,1), width ${OPEN_MS}ms cubic-bezier(0.22,1,0.36,1), height ${OPEN_MS}ms cubic-bezier(0.22,1,0.36,1), border-radius ${OPEN_MS}ms ease`;
-        applyRect(fullscreenRect(), "0px");
+        fsVideo.style.transition = `opacity ${SWAP_MS}ms ease, transform ${OPEN_MS}ms cubic-bezier(0.22,1,0.36,1), border-radius ${OPEN_MS}ms ease`;
+        placeFullscreen();
         fsVideo.style.opacity = "1";
         backdrop.style.background = "rgba(0,0,0,0.92)";
         closeBtn.style.opacity = "1";
@@ -741,12 +852,19 @@ export default function SpiralCarousel({
       if (!card) return;
       mediaOpacity = 0;
 
+      // The spiral has to be running again before the shrink starts: it is
+      // what fades the card's mesh back in underneath the player, and what
+      // hands the cards their streams back.
+      window.clearTimeout(coverTimer);
+      covered = false;
+      syncRunning();
+
       // The shrink itself must stay visible, so the opacity crossfade is
       // deferred until near the end — and finishes with room to spare
       // before the motion stops, so nothing pops at the moment it settles.
       const fadeDelay = CLOSE_MS - SWAP_MS - CLOSE_FADE_LEAD_MS;
-      fsVideo.style.transition = `opacity ${SWAP_MS}ms ease ${fadeDelay}ms, left ${CLOSE_MS}ms cubic-bezier(0.4,0,0.2,1), top ${CLOSE_MS}ms cubic-bezier(0.4,0,0.2,1), width ${CLOSE_MS}ms cubic-bezier(0.4,0,0.2,1), height ${CLOSE_MS}ms cubic-bezier(0.4,0,0.2,1), border-radius ${CLOSE_MS}ms ease`;
-      applyRect(cardScreenRect(card.mesh), "14px");
+      fsVideo.style.transition = `opacity ${SWAP_MS}ms ease ${fadeDelay}ms, transform ${CLOSE_MS}ms cubic-bezier(0.4,0,0.2,1), border-radius ${CLOSE_MS}ms ease`;
+      placeOver(cardScreenRect(card.mesh));
       fsVideo.style.opacity = "0";
       backdrop.style.background = "rgba(0,0,0,0)";
       backdrop.style.pointerEvents = "none";
@@ -810,7 +928,10 @@ export default function SpiralCarousel({
       canvasRect = canvas.getBoundingClientRect();
       // Keep the open player filling the viewport through a resize; snap
       // rather than transition since this isn't a user-driven open/close.
-      if (openCard) applyRect(fullscreenRect(), "0px");
+      if (openCard) {
+        layoutFullscreen();
+        placeFullscreen();
+      }
     };
     const observer = new ResizeObserver(resize);
     observer.observe(host);
@@ -823,6 +944,9 @@ export default function SpiralCarousel({
     let direction = 1;
     let dragging = false;
     let frozen = false; // true while the lightbox is open or animating
+    // ...and this once the lightbox has finished opening *over* the spiral, at
+    // which point there is nothing behind it left to draw. See setRunning.
+    let covered = false;
     let lastPointerY = 0;
     let downX = 0;
     let downY = 0;
@@ -1032,7 +1156,16 @@ export default function SpiralCarousel({
         // The middle of the screen wins the streams; a hovered card is about
         // to be opened, so it outranks everything.
         card.priority = card === hoveredCard || card === openCard ? -1 : edge;
-        if (inViewport && u.uOpacity.value > 0.05) candidates.push(card);
+        /* A card's centre can sit well inside the NDC square while the card
+         * itself is four-fifths eaten by a cloud bank — the helix is longer
+         * than the clear stretch of it. Those don't need a decoder, and
+         * leaving them out is what makes "every visible card is live" a
+         * budget a phone can actually meet. It also puts every activation
+         * inside the haze: a card wins its stream while it is still mostly
+         * vapour, and is in clear air by the time there is anything to see.
+         */
+        if (inViewport && u.uOpacity.value > 0.05 && fog < 0.85)
+          candidates.push(card);
       }
 
       // Uniforms above are current for this frame, so this check runs after
@@ -1103,8 +1236,8 @@ export default function SpiralCarousel({
      * Nothing here is worth a single frame of work when the canvas isn't on
      * screen: a backgrounded tab keeps its video decoders and its WebGL
      * context alive, and a spiral scrolled past keeps animating into a
-     * compositor layer nobody is looking at. Both stop the loop outright and
-     * hand back every stream.
+     * compositor layer nobody is looking at. An opaque lightbox on top of it
+     * is the same situation by a different route. All three stop the loop.
      */
     let onScreen = true;
     let running = true;
@@ -1114,12 +1247,28 @@ export default function SpiralCarousel({
       if (running) {
         timer.update(); // discard the gap, so nothing jumps on the first frame
         frame = requestAnimationFrame(tick);
-      } else {
-        cancelAnimationFrame(frame);
-        for (const card of cards) deactivateCard(card);
+        return;
       }
+      cancelAnimationFrame(frame);
+      // Nothing is drawing, so nothing needs decoding. Whether the streams are
+      // also handed back is decided in syncRunning, on its own terms.
+      for (const card of cards) suspendCard(card);
     };
-    const syncRunning = () => setRunning(onScreen && !document.hidden);
+
+    const syncRunning = () => {
+      /* Handing the streams back is keyed to the page going away, not to the
+       * loop stopping — the lightbox may already have stopped the loop by the
+       * time the tab is backgrounded, and a loop that is stopped for one
+       * reason must not be what stands between a backgrounded tab and its
+       * decoders. A spiral merely covered by the lightbox keeps its hls.js
+       * instances (paused), since that is the difference between the spiral
+       * being live the moment it reappears and a dozen streams being rebuilt
+       * from scratch behind it.
+       */
+      if (!onScreen || document.hidden)
+        for (const card of cards) deactivateCard(card);
+      setRunning(onScreen && !document.hidden && !covered);
+    };
 
     const visibility = new IntersectionObserver(
       ([entry]) => {
@@ -1135,6 +1284,7 @@ export default function SpiralCarousel({
 
     return () => {
       cancelAnimationFrame(frame);
+      window.clearTimeout(coverTimer);
       observer.disconnect();
       visibility.disconnect();
       document.removeEventListener("visibilitychange", syncRunning);
