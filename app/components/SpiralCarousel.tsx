@@ -64,9 +64,22 @@ function parseAspect(aspectRatio: string): [number, number] {
  */
 const CARD_H = 1.5;
 const CARD_W = (CARD_H * 9) / 16; // Reels are 9:16
-const RADIUS = 2;
 const ANGLE_GAP = 0.85; // radians of orbit per card
 const SEGMENTS = 20;
+
+/* How wide the helix orbits, and how far back the camera sits. A portrait
+ * phone frustum is roughly half as wide as it is tall, so the desktop pair
+ * pushes the cards either side of the front one clean off the left and right
+ * edges — and a card whose centre never enters the NDC square never earns a
+ * live stream either, which is what made clips sit on their poster for
+ * seconds at a time. Narrowing the orbit and backing the camera off fits the
+ * whole width of the spiral on screen; the two move together because backing
+ * off alone would shrink the front card past the point it reads.
+ */
+const RADIUS = 2;
+const RADIUS_MOBILE = 1.6;
+const CAMERA_Z = 8;
+const CAMERA_Z_MOBILE = 9.2;
 
 /* World units of climb per card. A phone is narrow, so the same climb that
  * reads as a comfortable stride on a desktop leaves the cards stranded far
@@ -75,17 +88,19 @@ const SEGMENTS = 20;
  * shortened; see the no-crossing note below for what that costs.
  */
 const VERTICAL_GAP = 0.62;
-const VERTICAL_GAP_MOBILE = 0.45;
+const VERTICAL_GAP_MOBILE = 0.38;
 const MOBILE_WIDTH = 768;
 
 /* No two cards may ever intersect. A curled card reaches its neighbour's plane
- * at (RADIUS + CURL)*cos(a) + (CARD_W/2)*sin(a) - RADIUS, which only stays
- * negative for a > 0.640 rad — so ANGLE_GAP clears it by 0.244. Pairs 7, 8 and
- * 15 steps apart do land back inside that wedge, since a multiple of ANGLE_GAP
- * comes back near a multiple of 2*PI there, but by then they sit far enough
- * apart vertically to clear CARD_H at full swell (2.55 world units) — 4.3 at
- * the desktop climb, and still 3.15 at the shorter mobile one. The speed
- * distortions in the shader are bounded so they preserve this margin.
+ * at (radius + CURL)*cos(a) + (CARD_W/2)*sin(a) - radius, which only stays
+ * negative past 0.640 rad at the desktop radius and past 0.737 at the tighter
+ * mobile one — so ANGLE_GAP clears it either way. Pairs 7, 8 and 15 steps
+ * apart do land back inside that wedge, since a multiple of ANGLE_GAP comes
+ * back near a multiple of 2*PI there, but by then they sit far enough apart
+ * vertically to clear CARD_H at full swell (2.55 world units) — 4.3 at the
+ * desktop climb, and 2.66 at the shorter mobile one, which is what floors
+ * VERTICAL_GAP_MOBILE. The speed distortions in the shader are bounded so
+ * they preserve this margin.
  */
 
 /* The card whose plane squarely faces the camera is the one a quarter turn
@@ -107,7 +122,14 @@ const DECAY = 0.9;
 const IDLE_SPEED = 0.0022;
 const MAX_SPEED = 0.85;
 const WHEEL_SENS = 0.00016;
+/* A thumb swipe crosses most of a phone screen in one flick, so the desktop
+ * pixels-to-cards rate sends the spiral past several cards at once — too fast
+ * to read, and fast enough to keep tripping the BUSY_SPEED gate that holds
+ * new streams back.
+ */
 const DRAG_SENS = 0.0024;
+const DRAG_SENS_MOBILE = 0.0013;
+const MAX_SPEED_MOBILE = 0.5;
 
 /* ── Distortion ──────────────────────────────────────────────────────────── */
 const CURL = 0.18; // how far the middle of a card bulges outward, always on
@@ -185,6 +207,14 @@ const VIEWPORT_ACTIVATE = 0.92; // NDC radius a card must enter to start decodin
 const VIEWPORT_DEACTIVATE = 1.08; // ...and must drift back past to stop — the
 // gap between the two is hysteresis, so a card sitting near the edge doesn't
 // restart its stream every frame.
+/* Measured on the card's centre, so a tall card that is half on screen still
+ * counts as out. On a phone that meant a clip only began decoding once it was
+ * most of the way to the middle, then needed its manifest and first segment on
+ * top of that. Starting a little before the card lands gives the stream that
+ * head start; the live-stream budget below still decides who actually gets one.
+ */
+const VIEWPORT_ACTIVATE_MOBILE = 1.1;
+const VIEWPORT_DEACTIVATE_MOBILE = 1.3;
 
 /* "Only a handful at once" turned out to need saying out loud. A tall phone
  * screen puts far more of the helix inside the NDC square than a desktop one
@@ -346,7 +376,7 @@ export default function SpiralCarousel({
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
-    camera.position.set(0, 0, 8);
+    camera.position.set(0, 0, CAMERA_Z);
     // The loop projects card centres before the first render, which is what
     // would otherwise fill this in.
     camera.updateMatrixWorld();
@@ -381,6 +411,11 @@ export default function SpiralCarousel({
     let centerY = centerYFor(verticalGap);
     let ramp = depthRamp(cardCount, verticalGap);
     let maxLive = MAX_LIVE;
+    let radius = RADIUS;
+    let dragSens = DRAG_SENS;
+    let maxSpeed = MAX_SPEED;
+    let viewportActivate = VIEWPORT_ACTIVATE;
+    let viewportDeactivate = VIEWPORT_DEACTIVATE;
 
     const cards: Card[] = [];
     for (let i = 0; i < cardCount; i++) {
@@ -663,12 +698,21 @@ export default function SpiralCarousel({
       renderer.setSize(w, h, false);
       camera.aspect = w / h;
       camera.fov = mobile ? 45 : 35;
+      camera.position.z = mobile ? CAMERA_Z_MOBILE : CAMERA_Z;
       camera.updateProjectionMatrix();
+      camera.updateMatrixWorld();
 
       verticalGap = mobile ? VERTICAL_GAP_MOBILE : VERTICAL_GAP;
       centerY = centerYFor(verticalGap);
       ramp = depthRamp(cardCount, verticalGap);
       maxLive = mobile ? MAX_LIVE_MOBILE : MAX_LIVE;
+      radius = mobile ? RADIUS_MOBILE : RADIUS;
+      dragSens = mobile ? DRAG_SENS_MOBILE : DRAG_SENS;
+      maxSpeed = mobile ? MAX_SPEED_MOBILE : MAX_SPEED;
+      viewportActivate = mobile ? VIEWPORT_ACTIVATE_MOBILE : VIEWPORT_ACTIVATE;
+      viewportDeactivate = mobile
+        ? VIEWPORT_DEACTIVATE_MOBILE
+        : VIEWPORT_DEACTIVATE;
       for (const card of cards)
         card.mesh.material.uniforms.uCenterY.value = centerY;
 
@@ -698,8 +742,8 @@ export default function SpiralCarousel({
       if (delta === 0) return;
       targetSpeed = THREE.MathUtils.clamp(
         targetSpeed + delta,
-        -MAX_SPEED,
-        MAX_SPEED,
+        -maxSpeed,
+        maxSpeed,
       );
       direction = delta > 0 ? 1 : -1;
     };
@@ -744,7 +788,7 @@ export default function SpiralCarousel({
         }
       }
       if (!dragging) return;
-      push(-(e.clientY - lastPointerY) * DRAG_SENS);
+      push(-(e.clientY - lastPointerY) * dragSens);
       lastPointerY = e.clientY;
     };
     const endDrag = (e: PointerEvent) => {
@@ -851,14 +895,10 @@ export default function SpiralCarousel({
 
         const angle = b * ANGLE_GAP;
         // Cards fly in from the axis and settle down into place.
-        const radius = RADIUS * (1 - hidden / 2);
+        const r = radius * (1 - hidden / 2);
         const y = b * verticalGap + centerY + hidden * 1.5;
 
-        mesh.position.set(
-          Math.cos(angle) * radius,
-          y,
-          Math.sin(angle) * radius,
-        );
+        mesh.position.set(Math.cos(angle) * r, y, Math.sin(angle) * r);
         mesh.rotation.y = -angle + Math.PI / 2;
 
         u.uScrollSpeed.value = speed;
@@ -887,8 +927,8 @@ export default function SpiralCarousel({
         // don't drop out and restart on the same frame they cross the edge.
         const edge = Math.max(Math.abs(ndcPoint.x), Math.abs(ndcY));
         const inViewport = card.liveVideo
-          ? edge < VIEWPORT_DEACTIVATE
-          : edge < VIEWPORT_ACTIVATE;
+          ? edge < viewportDeactivate
+          : edge < viewportActivate;
         // The middle of the screen wins the streams; a hovered card is about
         // to be opened, so it outranks everything.
         card.priority = card === hoveredCard || card === openCard ? -1 : edge;
