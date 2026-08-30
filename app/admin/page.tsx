@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import * as tus from "tus-js-client";
+import { Loader2 } from "lucide-react";
 import { MIN_CARDS } from "@/lib/constants";
 import type { LibraryVideo } from "@/lib/library";
 import { Button } from "@/components/ui/button";
@@ -49,14 +50,28 @@ import {
 
 const POLL_MS = 2000;
 const PAGE_SIZE = 5;
-// Livepeer only reports a progress fraction once transcoding actually
-// starts — while queued ("waiting") it reports none at all. The second leg
-// of the bar creeps toward this ceiling as a placeholder until then, so it
-// never sits still, but defers to the real figure the moment one arrives.
-const UPLOAD_SHARE = 70;
-const ENCODING_CEILING = 96;
 
-type UploadState = "idle" | "uploading" | "processing" | "error";
+type UploadJob = {
+  id: string;
+  title: string;
+  description: string;
+  file: File;
+  state: "uploading" | "processing" | "error";
+  // Only meaningful while uploading — Livepeer's encoding step shows an
+  // indeterminate loader instead, since it reports no progress at all while
+  // queued and an unreliable one once transcoding starts.
+  progress: number;
+  error?: string;
+  // Flips true once the bytes have actually reached Livepeer. Before that
+  // the job is still being composed/sent and shows in the upload card;
+  // after, it's treated as "in the library" (encoding in place) even if it
+  // later errors, so errors during encoding surface there instead of
+  // jumping back to the upload card.
+  inLibrary: boolean;
+  // Set once the asset exists on Livepeer's side (right after upload
+  // starts), so a cancel mid-encode has something to delete.
+  assetId?: string;
+};
 
 export default function AdminPage() {
   const router = useRouter();
@@ -66,20 +81,19 @@ export default function AdminPage() {
 
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
-  const [uploadState, setUploadState] = useState<UploadState>("idle");
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [progress, setProgress] = useState(0);
+  // Each upload is tracked independently so starting a new one never has to
+  // wait on a previous file's encode — uploading and encoding both run in
+  // the background behind this list rather than gating the compose form.
+  const [jobs, setJobs] = useState<UploadJob[]>([]);
+  const jobsRef = useRef<UploadJob[]>([]);
+  useEffect(() => {
+    jobsRef.current = jobs;
+  }, [jobs]);
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const titleRef = useRef(title);
-  const descriptionRef = useRef(description);
-  useEffect(() => {
-    titleRef.current = title;
-  }, [title]);
-  useEffect(() => {
-    descriptionRef.current = description;
-  }, [description]);
+  const pollRefs = useRef<Map<string, ReturnType<typeof setTimeout>>>(
+    new Map(),
+  );
 
   const [editingVideo, setEditingVideo] = useState<LibraryVideo | null>(null);
   const [editTitle, setEditTitle] = useState("");
@@ -95,29 +109,19 @@ export default function AdminPage() {
       setLoaded(true);
     })();
     return () => {
-      if (pollRef.current) clearTimeout(pollRef.current);
+      pollRefs.current.forEach((t) => clearTimeout(t));
     };
   }, []);
-
-  // Second leg of the unified bar: while queued, Livepeer reports no
-  // progress at all, so creep asymptotically toward the ceiling just to
-  // show motion. The moment a real fraction arrives (transcoding started),
-  // this stands down and the real figure drives the bar instead.
-  const hasRealEncodingProgress = useRef(false);
-  useEffect(() => {
-    if (uploadState !== "processing") return;
-    const id = setInterval(() => {
-      if (hasRealEncodingProgress.current) return;
-      setProgress((p) =>
-        p >= ENCODING_CEILING ? p : p + (ENCODING_CEILING - p) * 0.08,
-      );
-    }, 400);
-    return () => clearInterval(id);
-  }, [uploadState]);
 
   const sortedLibrary = useMemo(
     () => [...library].sort((a, b) => b.createdAt - a.createdAt),
     [library],
+  );
+  // Newest-started first, matching sortedLibrary's ordering, so a job
+  // slots in above the real entries the same way a fresh upload would.
+  const pendingJobs = useMemo(
+    () => [...jobs].reverse().filter((j) => j.inLibrary),
+    [jobs],
   );
   const pageCount = Math.max(1, Math.ceil(sortedLibrary.length / PAGE_SIZE));
   // Derived rather than synced via effect: a delete can shrink pageCount
@@ -128,90 +132,109 @@ export default function AdminPage() {
     currentPage * PAGE_SIZE,
   );
 
-  const assetIdRef = useRef<string | null>(null);
-
-  const finishUpload = useCallback(() => {
-    setUploadState("idle");
-    setUploadError(null);
-    setTitle("");
-    setDescription("");
-    setProgress(0);
-    hasRealEncodingProgress.current = false;
-  }, []);
-
-  const retryUpload = useCallback(() => {
-    setUploadState("idle");
-    setUploadError(null);
-    setProgress(0);
-    hasRealEncodingProgress.current = false;
-  }, []);
-
-  const onUploadSuccess = useCallback(() => {
-    setUploadState((s) => (s === "error" ? s : "processing"));
-    setProgress((p) => Math.max(p, UPLOAD_SHARE));
-    const assetId = assetIdRef.current;
-    if (!assetId) return;
-    if (pollRef.current) clearTimeout(pollRef.current);
-
-    const poll = async () => {
-      const res = await fetch(
-        `/api/admin/livepeer-upload/status?assetId=${assetId}`,
+  const updateJob = useCallback(
+    (
+      id: string,
+      patch: Partial<UploadJob> | ((j: UploadJob) => Partial<UploadJob>),
+    ) => {
+      setJobs((prev) =>
+        prev.map((j) =>
+          j.id === id ? { ...j, ...(typeof patch === "function" ? patch(j) : patch) } : j,
+        ),
       );
-      const data = await res.json();
+    },
+    [],
+  );
 
-      if (data.status === "ready") {
-        const saveRes = await fetch("/api/admin/videos", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            title: titleRef.current.trim(),
-            description: descriptionRef.current.trim() || undefined,
-            assetId: data.assetId,
-            playbackId: data.playbackId,
-            hlsUrl: data.hlsUrl,
-            posterUrl: data.posterUrl,
-            aspectRatio: data.aspectRatio,
-          }),
-        });
-        if (!saveRes.ok) {
-          setUploadState("error");
-          setUploadError("Couldn't save the video to the library.");
-          return;
+  const removeJob = useCallback((id: string) => {
+    const t = pollRefs.current.get(id);
+    if (t) clearTimeout(t);
+    pollRefs.current.delete(id);
+    setJobs((prev) => prev.filter((j) => j.id !== id));
+  }, []);
+
+  const onUploadSuccess = useCallback(
+    (id: string, jobTitle: string, jobDescription: string, assetId: string) => {
+      // The upload bar finished at 100%; the encode bar starts over at 0
+      // rather than continuing that scale, since they're separate steps.
+      updateJob(id, (j) =>
+        j.state === "error"
+          ? {}
+          : { state: "processing", progress: 0, inLibrary: true },
+      );
+
+      const poll = async () => {
+        const res = await fetch(
+          `/api/admin/livepeer-upload/status?assetId=${assetId}`,
+        );
+        const data = await res.json();
+
+        if (data.status === "ready") {
+          const saveRes = await fetch("/api/admin/videos", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              title: jobTitle,
+              description: jobDescription || undefined,
+              assetId: data.assetId,
+              playbackId: data.playbackId,
+              hlsUrl: data.hlsUrl,
+              posterUrl: data.posterUrl,
+              aspectRatio: data.aspectRatio,
+            }),
+          });
+          if (!saveRes.ok) {
+            updateJob(id, {
+              state: "error",
+              error: "Couldn't save the video to the library.",
+            });
+            return;
+          }
+          const { video } = await saveRes.json();
+          setLibrary((prev) => [...prev, video]);
+          setPage(1);
+          removeJob(id);
+        } else if (data.status === "errored") {
+          updateJob(id, {
+            state: "error",
+            error: "Livepeer couldn't process this video.",
+          });
+        } else {
+          pollRefs.current.set(id, setTimeout(poll, POLL_MS));
         }
-        const { video } = await saveRes.json();
-        setProgress(100);
-        setLibrary((prev) => [...prev, video]);
-        setPage(1);
-        finishUpload();
-      } else if (data.status === "errored") {
-        setUploadState("error");
-        setUploadError("Livepeer couldn't process this video.");
-      } else {
-        if (typeof data.progress === "number") {
-          hasRealEncodingProgress.current = true;
-          const pct = Math.min(
-            ENCODING_CEILING,
-            UPLOAD_SHARE + data.progress * (100 - UPLOAD_SHARE),
-          );
-          setProgress((p) => Math.max(p, pct));
-        }
-        pollRef.current = setTimeout(poll, POLL_MS);
-      }
-    };
-    pollRef.current = setTimeout(poll, POLL_MS);
-  }, [finishUpload]);
+      };
+      pollRefs.current.set(id, setTimeout(poll, POLL_MS));
+    },
+    [updateJob, removeJob],
+  );
 
   // The asset (and its upload endpoint) is minted only once a file is
   // actually chosen — creating it eagerly would burn an asset slot against
-  // the account quota even for an upload that never happens.
+  // the account quota even for an upload that never happens. Each call adds
+  // its own job and returns immediately, so the compose form is free the
+  // moment this fires — a new upload can start while this one is still
+  // uploading or encoding in the background.
   const startUpload = useCallback(
-    async (file: File) => {
-      setUploadState("uploading");
-      setUploadError(null);
-      setProgress(0);
-      hasRealEncodingProgress.current = false;
+    async (file: File, jobTitle: string, jobDescription: string) => {
+      const id =
+        typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random()}`;
+      setJobs((prev) => [
+        ...prev,
+        {
+          id,
+          title: jobTitle,
+          description: jobDescription,
+          file,
+          state: "uploading",
+          progress: 0,
+          inLibrary: false,
+        },
+      ]);
 
       let tusEndpoint: string;
+      let assetId: string;
       try {
         const res = await fetch("/api/admin/livepeer-upload", {
           method: "POST",
@@ -224,12 +247,13 @@ export default function AdminPage() {
         }
         const data = await res.json();
         tusEndpoint = data.tusEndpoint;
-        assetIdRef.current = data.assetId;
+        assetId = data.assetId;
+        updateJob(id, { assetId });
       } catch (err) {
-        setUploadState("error");
-        setUploadError(
-          err instanceof Error ? err.message : "Couldn't start the upload.",
-        );
+        updateJob(id, {
+          state: "error",
+          error: err instanceof Error ? err.message : "Couldn't start the upload.",
+        });
         return;
       }
 
@@ -238,18 +262,44 @@ export default function AdminPage() {
         metadata: { filename: file.name, filetype: file.type },
         uploadSize: file.size,
         onError: (err) => {
-          setUploadState("error");
-          setUploadError(err.message || "Upload failed.");
+          updateJob(id, { state: "error", error: err.message || "Upload failed." });
         },
         onProgress: (bytesUploaded, bytesTotal) => {
-          const pct = Math.round((bytesUploaded / bytesTotal) * UPLOAD_SHARE);
-          setProgress((p) => Math.max(p, pct));
+          const pct = Math.round((bytesUploaded / bytesTotal) * 100);
+          updateJob(id, (j) => ({ progress: Math.max(j.progress, pct) }));
         },
-        onSuccess: onUploadSuccess,
+        onSuccess: () => onUploadSuccess(id, jobTitle, jobDescription, assetId),
       });
       upload.start();
     },
-    [onUploadSuccess],
+    [onUploadSuccess, updateJob],
+  );
+
+  const retryJob = useCallback(
+    (id: string) => {
+      const job = jobsRef.current.find((j) => j.id === id);
+      if (!job) return;
+      removeJob(id);
+      void startUpload(job.file, job.title, job.description);
+    },
+    [removeJob, startUpload],
+  );
+
+  // Stops polling and drops the job locally right away — the encode running
+  // on Livepeer's side isn't worth waiting on a response for — then best-
+  // effort deletes the asset so it doesn't sit around against the quota.
+  const cancelJob = useCallback(
+    (id: string) => {
+      const job = jobsRef.current.find((j) => j.id === id);
+      removeJob(id);
+      if (job?.assetId) {
+        void fetch(
+          `/api/admin/livepeer-upload?assetId=${job.assetId}`,
+          { method: "DELETE" },
+        ).catch(() => {});
+      }
+    },
+    [removeJob],
   );
 
   const deleteVideo = async (id: string) => {
@@ -329,7 +379,6 @@ export default function AdminPage() {
                   value={title}
                   onChange={(e) => setTitle(e.target.value)}
                   placeholder="Title"
-                  disabled={uploadState !== "idle"}
                 />
               </div>
               <div>
@@ -342,88 +391,111 @@ export default function AdminPage() {
                   onChange={(e) => setDescription(e.target.value)}
                   placeholder="Description (optional)"
                   className="min-h-16"
-                  disabled={uploadState !== "idle"}
                 />
               </div>
 
-              {uploadState === "idle" &&
-                (title.trim() ? (
-                  <div
-                    onDragOver={(e) => {
-                      e.preventDefault();
-                      setDragging(true);
-                    }}
-                    onDragLeave={() => setDragging(false)}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      setDragging(false);
-                      const file = e.dataTransfer.files[0];
-                      if (file) void startUpload(file);
-                    }}
-                    className={`flex min-h-32 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-center transition-colors ${
-                      dragging
-                        ? "border-primary bg-muted"
-                        : "border-border bg-muted/50"
-                    }`}
+              {/* Uploads and encodes run in the background per job, so this
+                  stays available the whole time — starting one never waits
+                  on another. */}
+              {title.trim() ? (
+                <div
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    setDragging(true);
+                  }}
+                  onDragLeave={() => setDragging(false)}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    setDragging(false);
+                    const file = e.dataTransfer.files[0];
+                    if (file) {
+                      void startUpload(file, title.trim(), description.trim());
+                      setTitle("");
+                      setDescription("");
+                    }
+                  }}
+                  className={`flex min-h-32 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-center transition-colors ${
+                    dragging
+                      ? "border-primary bg-muted"
+                      : "border-border bg-muted/50"
+                  }`}
+                >
+                  <span className="text-xs text-muted-foreground">
+                    Drag a video file here, or
+                  </span>
+                  <Button
+                    size="sm"
+                    onClick={() => fileInputRef.current?.click()}
                   >
-                    <span className="text-xs text-muted-foreground">
-                      Drag a video file here, or
-                    </span>
-                    <Button
-                      size="sm"
-                      onClick={() => fileInputRef.current?.click()}
-                    >
-                      Choose a file
-                    </Button>
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept="video/*"
-                      hidden
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        // Reset so re-picking the same file still fires change.
-                        e.target.value = "";
-                        if (file) void startUpload(file);
-                      }}
-                    />
-                  </div>
-                ) : (
-                  <div className="flex min-h-32 flex-col items-center justify-center rounded-lg border border-dashed border-border bg-muted/50 text-center text-xs text-muted-foreground">
-                    Enter a title to enable upload
-                  </div>
-                ))}
-
-              {(uploadState === "uploading" || uploadState === "processing") && (
-                <div className="grid gap-2">
-                  <p className="flex justify-between text-sm text-muted-foreground">
-                    <span>
-                      {uploadState === "uploading" && `Uploading "${title}"…`}
-                      {uploadState === "processing" && `Encoding "${title}"…`}
-                    </span>
-                    <span>{Math.round(progress)}%</span>
-                  </p>
-                  <Progress value={progress} />
+                    Choose a file
+                  </Button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="video/*"
+                    hidden
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      // Reset so re-picking the same file still fires change.
+                      e.target.value = "";
+                      if (file) {
+                        void startUpload(file, title.trim(), description.trim());
+                        setTitle("");
+                        setDescription("");
+                      }
+                    }}
+                  />
+                </div>
+              ) : (
+                <div className="flex min-h-32 flex-col items-center justify-center rounded-lg border border-dashed border-border bg-muted/50 text-center text-xs text-muted-foreground">
+                  Enter a title to enable upload
                 </div>
               )}
 
-              {uploadState === "error" && (
-                <>
-                  <Alert variant="destructive">
-                    <AlertDescription>
-                      {uploadError ?? "Something went wrong."}
-                    </AlertDescription>
-                  </Alert>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={retryUpload}
-                    className="justify-self-start"
-                  >
-                    Try again
-                  </Button>
-                </>
-              )}
+              {/* Once a job's bytes reach Livepeer it moves down into the
+                  Library list to encode in place — only jobs still being
+                  sent (or that failed before ever reaching Livepeer) show
+                  here. */}
+              {jobs
+                .filter((job) => !job.inLibrary)
+                .map((job) => (
+                  <div key={job.id} className="grid gap-2">
+                    {job.state === "error" ? (
+                      <>
+                        <Alert variant="destructive">
+                          <AlertDescription>
+                            {job.error ?? "Something went wrong."} (
+                            {job.title})
+                          </AlertDescription>
+                        </Alert>
+                        <div className="flex gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => retryJob(job.id)}
+                          >
+                            Try again
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => removeJob(job.id)}
+                          >
+                            Dismiss
+                          </Button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <p className="flex justify-between text-sm text-muted-foreground">
+                          <span>{`Uploading "${job.title}"…`}</span>
+                          <span>{Math.round(job.progress)}%</span>
+                        </p>
+                        <Progress value={job.progress} />
+                      </>
+                    )}
+                  </div>
+                ))}
             </div>
           </CardContent>
         </Card>
@@ -450,12 +522,70 @@ export default function AdminPage() {
                   </div>
                 ))}
               </div>
-            ) : sortedLibrary.length === 0 ? (
+            ) : sortedLibrary.length === 0 && pendingJobs.length === 0 ? (
               <p className="px-4 text-sm text-muted-foreground">
                 No videos uploaded yet.
               </p>
             ) : (
               <div className="divide-y divide-border">
+                {/* Uploaded jobs land here the moment their bytes reach
+                    Livepeer, encoding in place, only on the newest page —
+                    they behave like a video that hasn't finished
+                    processing yet, not a separate queue. */}
+                {currentPage === 1 &&
+                  pendingJobs.map((job) => (
+                    <div
+                      key={job.id}
+                      className="flex items-center gap-3 px-4 py-3"
+                    >
+                      <div className="relative flex h-14 w-9 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted text-[10px] tabular-nums text-muted-foreground ring-1 ring-foreground/10">
+                        {job.state === "error" ? (
+                          "!"
+                        ) : (
+                          <div className="loading-stripes absolute inset-0" />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm">{job.title}</p>
+                        {job.state === "error" ? (
+                          <p className="truncate text-xs text-destructive">
+                            {job.error ?? "Something went wrong."}
+                          </p>
+                        ) : (
+                          <p className="flex items-center gap-1.5 truncate text-xs text-muted-foreground">
+                            <Loader2 className="size-3 shrink-0 animate-spin" />
+                            Encoding…
+                          </p>
+                        )}
+                      </div>
+                      {job.state === "error" ? (
+                        <>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => retryJob(job.id)}
+                          >
+                            Try again
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => removeJob(job.id)}
+                          >
+                            Dismiss
+                          </Button>
+                        </>
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => cancelJob(job.id)}
+                        >
+                          Cancel
+                        </Button>
+                      )}
+                    </div>
+                  ))}
                 {pageItems.map((video) => (
                   <div
                     key={video.id}

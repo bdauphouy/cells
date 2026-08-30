@@ -176,6 +176,36 @@
     animation: none;
   }
 }
+
+/* Loading stripes: a scrolling diagonal-stripe fill standing in for a video
+ * thumbnail that hasn't finished encoding yet. Same technique as Bootstrap's
+ * striped progress bar — a diagonal gradient tiled at the stripe's own
+ * period, then scrolled by exactly one tile per loop so it reads as
+ * continuous motion instead of a jump-cut. */
+.loading-stripes {
+  background-image: linear-gradient(
+    45deg,
+    var(--foreground) 25%,
+    transparent 25%,
+    transparent 50%,
+    var(--foreground) 50%,
+    var(--foreground) 75%,
+    transparent 75%,
+    transparent
+  );
+  background-size: 10px 10px;
+  opacity: 0.15;
+  animation: loading-stripes-scroll 0.6s linear infinite;
+}
+
+@keyframes loading-stripes-scroll {
+  from {
+    background-position: 10px 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
 /* ---break---
  */
 .dark {
