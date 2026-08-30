@@ -2,8 +2,8 @@
 
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
-import vertexShader from "@/shaders/card.vert.glsl";
-import fragmentShader from "@/shaders/card.frag.glsl";
+import vertexShader from "@/lib/shaders/card.vert.glsl";
+import fragmentShader from "@/lib/shaders/card.frag.glsl";
 
 /* ── Helix ─────────────────────────────────────────────────────────────────
  * Cards ride a vertical helix: each one orbits the y axis a little further
