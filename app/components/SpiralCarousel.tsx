@@ -1,16 +1,67 @@
 "use client";
 
+import fragmentShader from "@/lib/shaders/card.frag.glsl";
+import vertexShader from "@/lib/shaders/card.vert.glsl";
+import Hls from "hls.js";
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
-import vertexShader from "@/lib/shaders/card.vert.glsl";
-import fragmentShader from "@/lib/shaders/card.frag.glsl";
+
+export type ResolvedCard = {
+  hlsUrl: string;
+  posterUrl?: string;
+  aspectRatio: string;
+  title: string;
+};
+
+/* ── Video source ──────────────────────────────────────────────────────────
+ * Served from Livepeer as adaptive HLS. Safari plays an .m3u8 natively
+ * through `src`; every other engine needs hls.js to feed the stream into the
+ * same plain <video> element via MediaSource — so a video element stays an
+ * ordinary <video> either way, which is what lets THREE.VideoTexture read it
+ * at all (a player wrapper would hide its <video> in shadow DOM, out of
+ * reach). URLs come resolved from Livepeer's playback-info endpoint rather
+ * than templated from a playback id, which Livepeer warns against.
+ */
+
+// hls.js's cold-start bandwidth guess (its default abrEwmaDefaultEstimate)
+// is 500 Kbps, below the bottom rung Livepeer generates (~770 Kbps for a
+// portrait clip) — so every fresh Hls instance starts at the lowest
+// rendition no matter the real connection speed, then climbs once it's
+// measured actual segment downloads. A fresh instance is created on every
+// card activation and every fullscreen open, so that low-then-better dip
+// was repeating constantly rather than happening once. Assuming a decent
+// connection up front (above the top rung, ~2.2 Mbps) starts at the best
+// rendition immediately; ABR still steps down for anyone who's actually
+// slower.
+const INITIAL_BANDWIDTH_ESTIMATE = 3_000_000;
+
+function attachHls(el: HTMLVideoElement, src: string): Hls | null {
+  el.crossOrigin = "anonymous"; // cross-origin now; without this the WebGL
+  // texture upload throws a tainted-canvas security error.
+  if (Hls.isSupported()) {
+    const hls = new Hls({ abrEwmaDefaultEstimate: INITIAL_BANDWIDTH_ESTIMATE });
+    hls.on(Hls.Events.ERROR, (_event, data) => {
+      console.error("hls.js error", data);
+    });
+    hls.loadSource(src);
+    hls.attachMedia(el);
+    return hls;
+  }
+  // Safari (and anything else with native HLS support): no library needed.
+  el.src = src;
+  return null;
+}
+
+function parseAspect(aspectRatio: string): [number, number] {
+  const [w, h] = aspectRatio.split(":").map(Number);
+  return w > 0 && h > 0 ? [w, h] : [16, 9];
+}
 
 /* ── Helix ─────────────────────────────────────────────────────────────────
  * Cards ride a vertical helix: each one orbits the y axis a little further
  * round and climbs a little higher than the last, its plane kept tangent to
  * the cylinder so the strip reads as a spiral staircase from the camera.
  */
-const COUNT = 18;
 const CARD_H = 1.5;
 const CARD_W = (CARD_H * 9) / 16; // Reels are 9:16
 const RADIUS = 2;
@@ -81,6 +132,29 @@ const FOG_SWELL = 0.7;
 const REVEAL_EASING = 0.055;
 const REVEAL_STAGGER = 0.05; // seconds between each card's entrance
 
+/* A hovered card only counts as truly clickable — worth naming — once it's
+ * fully settled: past its entrance, not yet dissolving into a cloud bank,
+ * and not fading for the lightbox. Raycasting alone doesn't know any of
+ * this, since it hits a card's geometry even where the shader has already
+ * discarded that card down to a wisp. */
+const TITLE_REVEAL_MIN = 0.97;
+const TITLE_FOG_MAX = 0.15;
+const TITLE_OPACITY_MIN = 0.9;
+
+/* ── Live video activation ────────────────────────────────────────────────
+ * Every card has its own clip now, so decoding all of them at once isn't an
+ * option — bandwidth and browser decode limits both break well before 18
+ * concurrent streams. Each card shows a static thumbnail by default and
+ * only gets a real <video> + hls.js decode once it's actually on screen (or
+ * hovered, which implies on screen too). Cards spend most of the spiral off
+ * in the cloud banks at either end, so only a handful are ever live at once
+ * despite there being no hard cap.
+ */
+const VIEWPORT_ACTIVATE = 0.92; // NDC radius a card must enter to start decoding
+const VIEWPORT_DEACTIVATE = 1.08; // ...and must drift back past to stop — the
+// gap between the two is hysteresis, so a card sitting near the edge doesn't
+// restart its stream every frame.
+
 /* ── Fullscreen ────────────────────────────────────────────────────────────
  * A tap grows the card from its exact on-screen rect into a real
  * <video controls> element — a lightbox, not a modal bolted on top. The
@@ -111,36 +185,26 @@ type Card = {
   reveal: number;
   hover: number;
   hiding: number;
+  hlsUrl: string;
+  title: string;
+  posterTexture: THREE.Texture;
+  aspectW: number;
+  aspectH: number;
+  liveVideo?: HTMLVideoElement;
+  liveHls?: Hls | null;
+  liveTexture?: THREE.VideoTexture;
 };
 
-export default function SpiralCarousel() {
+export default function SpiralCarousel({
+  cards: videos,
+}: {
+  cards: ResolvedCard[];
+}) {
   const hostRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
-
-    /* One <video> shared by every card — a single decode feeds all 18 planes. */
-    const video = document.createElement("video");
-    video.src = "/rick.mp4";
-    video.loop = true;
-    video.muted = true;
-    video.playsInline = true;
-    video.preload = "auto";
-    // iOS Safari refuses to decode a detached element, so keep it in the tree.
-    video.style.cssText =
-      "position:absolute;width:1px;height:1px;opacity:0;pointer-events:none";
-    host.appendChild(video);
-    const play = () => void video.play().catch(() => {});
-    play();
-    // Some browsers still gate autoplay; the first interaction unblocks it.
-    window.addEventListener("pointerdown", play, { once: true });
-
-    const texture = new THREE.VideoTexture(video);
-    texture.colorSpace = THREE.SRGBColorSpace;
-    texture.minFilter = THREE.LinearFilter;
-    texture.magFilter = THREE.LinearFilter;
-    texture.generateMipmaps = false;
 
     const brand = getComputedStyle(document.documentElement)
       .getPropertyValue("--brand")
@@ -168,6 +232,15 @@ export default function SpiralCarousel() {
     host.appendChild(gridBase);
     host.appendChild(gridSpot);
     host.appendChild(canvas);
+
+    // Hovered card's title, as a fixed pill anchored to the bottom of the
+    // page rather than tracking the card — the card is mid-spiral, curling
+    // and dissolving, so anchoring text to it would fight the motion instead
+    // of reading calmly.
+    const titleLabel = document.createElement("div");
+    titleLabel.style.cssText =
+      "position:fixed;z-index:30;left:50%;bottom:32px;pointer-events:none;background:#fff;color:#111;font-size:13px;font-weight:500;letter-spacing:0.01em;padding:10px 20px;border-radius:9999px;box-shadow:0 10px 30px rgba(0,0,0,0.18);opacity:0;transform:translate(-50%,6px);transition:opacity 0.25s ease,transform 0.25s ease;white-space:nowrap;max-width:80vw;overflow:hidden;text-overflow:ellipsis;";
+    document.body.appendChild(titleLabel);
 
     // Vapour over both ends of the spiral. Two layers per bank, drifting at
     // different speeds, so the haze keeps moving without ever reading as a
@@ -198,19 +271,41 @@ export default function SpiralCarousel() {
       SEGMENTS,
     );
     const planeSizes = new THREE.Vector2(CARD_W, CARD_H);
-    const imageSizes = new THREE.Vector2(16, 9);
+
+    const textureLoader = new THREE.TextureLoader();
+
+    // Livepeer doesn't guarantee a thumbnail for every asset, so a card
+    // without one shows a flat fog-toned fill until its video activates.
+    const makeFallbackTexture = () => {
+      const { r, g, b } = fogColor;
+      const pixel = new Uint8Array([r * 255, g * 255, b * 255, 255]);
+      const texture = new THREE.DataTexture(pixel, 1, 1);
+      texture.needsUpdate = true;
+      return texture;
+    };
+
+    // The library drives the card count directly: fewer than MIN_CARDS
+    // videos loop round to reach it, MIN_CARDS or more get one card each.
+    const cardCount = videos.length;
 
     const cards: Card[] = [];
-    for (let i = 0; i < COUNT; i++) {
+    for (let i = 0; i < cardCount; i++) {
+      const video = videos[i];
+      const [aspectW, aspectH] = parseAspect(video.aspectRatio);
+      const posterTexture = video.posterUrl
+        ? textureLoader.load(video.posterUrl)
+        : makeFallbackTexture();
+      posterTexture.colorSpace = THREE.SRGBColorSpace;
+
       const material = new THREE.ShaderMaterial({
         vertexShader,
         fragmentShader,
         transparent: true,
         side: THREE.DoubleSide,
         uniforms: {
-          uTexture: { value: texture },
+          uTexture: { value: posterTexture },
           uPlaneSizes: { value: planeSizes },
-          uImageSizes: { value: imageSizes },
+          uImageSizes: { value: new THREE.Vector2(aspectW, aspectH) },
           uCurl: { value: CURL },
           uSquash: { value: SQUASH },
           uCenterY: { value: CENTER_Y },
@@ -237,24 +332,69 @@ export default function SpiralCarousel() {
         reveal: 0,
         hover: 0,
         hiding: 0,
+        hlsUrl: video.hlsUrl,
+        title: video.title,
+        posterTexture,
+        aspectW,
+        aspectH,
       });
     }
     const meshes = cards.map((c) => c.mesh);
 
-    const onMeta = () => imageSizes.set(video.videoWidth, video.videoHeight);
-    video.addEventListener("loadedmetadata", onMeta);
-    if (video.videoWidth) onMeta();
+    const activateCard = (card: Card) => {
+      if (card.liveVideo) return;
+      const el = document.createElement("video");
+      el.loop = true;
+      el.muted = true;
+      el.playsInline = true;
+      el.preload = "auto";
+      el.style.cssText =
+        "position:absolute;width:1px;height:1px;opacity:0;pointer-events:none";
+      host.appendChild(el);
+      const hls = attachHls(el, card.hlsUrl);
+      void el.play().catch(() => {});
+
+      const texture = new THREE.VideoTexture(el);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.minFilter = THREE.LinearFilter;
+      texture.magFilter = THREE.LinearFilter;
+      texture.generateMipmaps = false;
+
+      card.liveVideo = el;
+      card.liveHls = hls;
+      card.liveTexture = texture;
+      // Swap once there's an actual frame to show, so activating a card
+      // doesn't flash black before the first frame decodes.
+      const swap = () => {
+        card.mesh.material.uniforms.uTexture.value = texture;
+      };
+      if (el.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) swap();
+      else el.addEventListener("loadeddata", swap, { once: true });
+    };
+
+    const deactivateCard = (card: Card) => {
+      if (!card.liveVideo) return;
+      card.liveHls?.destroy();
+      card.liveVideo.pause();
+      card.liveVideo.removeAttribute("src");
+      card.liveVideo.remove();
+      card.liveTexture?.dispose();
+      card.mesh.material.uniforms.uTexture.value = card.posterTexture;
+      card.liveVideo = undefined;
+      card.liveHls = undefined;
+      card.liveTexture = undefined;
+    };
 
     /* ── Fullscreen lightbox ──────────────────────────────────────────────── */
     const backdrop = document.createElement("div");
     backdrop.style.cssText =
       "position:fixed;inset:0;z-index:40;background:rgba(0,0,0,0);display:none;transition:background-color 0.5s ease;";
     const fsVideo = document.createElement("video");
-    fsVideo.src = "/rick.mp4";
     fsVideo.controls = true;
     fsVideo.playsInline = true;
     fsVideo.style.cssText =
       "position:fixed;z-index:41;display:none;object-fit:cover;border-radius:14px;box-shadow:0 30px 80px rgba(0,0,0,0.6);outline:none;";
+    let fsHls: Hls | null = null;
     const closeBtn = document.createElement("button");
     closeBtn.setAttribute("aria-label", "Close video");
     closeBtn.textContent = "✕";
@@ -294,7 +434,7 @@ export default function SpiralCarousel() {
     const fullscreenRect = () => {
       const vw = window.innerWidth;
       const vh = window.innerHeight;
-      const aspect = imageSizes.x / imageSizes.y || 16 / 9;
+      const aspect = openCard ? openCard.aspectW / openCard.aspectH : 16 / 9;
       let width = vh * aspect;
       let height = vh;
       if (width > vw) {
@@ -333,7 +473,9 @@ export default function SpiralCarousel() {
       backdrop.style.pointerEvents = "auto";
       fsVideo.style.pointerEvents = "auto";
 
-      fsVideo.currentTime = video.currentTime;
+      fsHls?.destroy();
+      fsHls = attachHls(fsVideo, card.hlsUrl);
+      fsVideo.currentTime = card.liveVideo?.currentTime ?? 0;
       fsVideo.muted = false;
       void fsVideo.play().catch(() => {});
 
@@ -368,7 +510,6 @@ export default function SpiralCarousel() {
       closeBtn.style.opacity = "0";
       closeBtn.style.pointerEvents = "none";
 
-      video.currentTime = fsVideo.currentTime;
       fsVideo.muted = true;
 
       window.setTimeout(() => {
@@ -520,11 +661,15 @@ export default function SpiralCarousel() {
         dragging || frozen
           ? undefined
           : raycaster.intersectObjects(meshes)[0]?.object;
+      const hoveredCard = cards.find((c) => c.mesh === hovered);
       canvas.style.cursor = dragging
         ? "grabbing"
         : hovered
           ? "pointer"
           : "grab";
+
+      const desired = new Set<Card>();
+      if (hoveredCard) desired.add(hoveredCard);
 
       for (const card of cards) {
         const { mesh } = card;
@@ -542,9 +687,10 @@ export default function SpiralCarousel() {
           (hideTarget - card.hiding) * (1 - Math.pow(1 - HIDE_EASING, step));
 
         const hidden = 1 - card.reveal;
-        // Wrap into [0, COUNT) so a fixed set of meshes loops forever.
-        const slot = (((card.index - offset) % COUNT) + COUNT) % COUNT;
-        const b = slot - (COUNT - 1) / 2;
+        // Wrap into [0, cardCount) so a fixed set of meshes loops forever.
+        const slot =
+          (((card.index - offset) % cardCount) + cardCount) % cardCount;
+        const b = slot - (cardCount - 1) / 2;
 
         const angle = b * ANGLE_GAP;
         // Cards fly in from the axis and settle down into place.
@@ -564,7 +710,8 @@ export default function SpiralCarousel() {
         u.uReveal.value = card.reveal;
         u.uTime.value = elapsed;
 
-        const ndcY = ndc.copy(mesh.position).project(camera).y;
+        const ndcPoint = ndc.copy(mesh.position).project(camera);
+        const ndcY = ndcPoint.y;
         const depth = Math.abs(b * VERTICAL_GAP);
         const fog = Math.max(
           THREE.MathUtils.smoothstep(Math.abs(ndcY), FOG_START, FOG_END),
@@ -577,6 +724,34 @@ export default function SpiralCarousel() {
           card.reveal *
           (1 - THREE.MathUtils.smoothstep(depth, CUT_START, CUT_END)) *
           (1 - card.hiding);
+
+        // A card counts as "on screen" once its centre falls inside the NDC
+        // square; already-live cards get the looser of the two radii so they
+        // don't drop out and restart on the same frame they cross the edge.
+        const edge = Math.max(Math.abs(ndcPoint.x), Math.abs(ndcY));
+        const inViewport = card.liveVideo
+          ? edge < VIEWPORT_DEACTIVATE
+          : edge < VIEWPORT_ACTIVATE;
+        if (inViewport && u.uOpacity.value > 0.05) desired.add(card);
+      }
+
+      // Uniforms above are current for this frame, so this check runs after
+      // that loop rather than off the raycast hit alone — a card can be the
+      // nearest hit and still be mid-entrance or half into a cloud bank.
+      const hu = hoveredCard?.mesh.material.uniforms;
+      const showTitle =
+        !!hu &&
+        hu.uReveal.value > TITLE_REVEAL_MIN &&
+        hu.uFog.value < TITLE_FOG_MAX &&
+        hu.uOpacity.value > TITLE_OPACITY_MIN;
+      if (showTitle) titleLabel.textContent = hoveredCard!.title;
+      titleLabel.style.opacity = showTitle ? "1" : "0";
+      titleLabel.style.transform = `translate(-50%,${showTitle ? 0 : 6}px)`;
+
+      for (const card of cards) {
+        const shouldBeActive = desired.has(card);
+        if (shouldBeActive && !card.liveVideo) activateCard(card);
+        else if (!shouldBeActive && card.liveVideo) deactivateCard(card);
       }
 
       renderer.render(scene, camera);
@@ -586,9 +761,7 @@ export default function SpiralCarousel() {
     return () => {
       cancelAnimationFrame(frame);
       observer.disconnect();
-      window.removeEventListener("pointerdown", play);
       window.removeEventListener("keydown", onKeyDown);
-      video.removeEventListener("loadedmetadata", onMeta);
       canvas.removeEventListener("wheel", onWheel);
       canvas.removeEventListener("pointerdown", onPointerDown);
       canvas.removeEventListener("pointermove", onPointerMove);
@@ -597,24 +770,26 @@ export default function SpiralCarousel() {
       canvas.removeEventListener("pointerleave", onPointerLeave);
       closeBtn.removeEventListener("click", closeVideo);
       backdrop.removeEventListener("click", closeVideo);
-      video.pause();
-      video.removeAttribute("src");
-      video.remove();
+      fsHls?.destroy();
       fsVideo.pause();
       fsVideo.removeAttribute("src");
       fsVideo.remove();
       backdrop.remove();
       closeBtn.remove();
-      for (const card of cards) card.mesh.material.dispose();
+      titleLabel.remove();
+      for (const card of cards) {
+        deactivateCard(card);
+        card.posterTexture.dispose();
+        card.mesh.material.dispose();
+      }
       geometry.dispose();
-      texture.dispose();
       renderer.dispose();
       canvas.remove();
       gridBase.remove();
       gridSpot.remove();
       for (const bank of banks) bank.remove();
     };
-  }, []);
+  }, [videos]);
 
   return (
     <div
