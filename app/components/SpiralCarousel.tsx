@@ -35,19 +35,97 @@ export type ResolvedCard = {
 // slower.
 const INITIAL_BANDWIDTH_ESTIMATE = 3_000_000;
 
-function attachHls(el: HTMLVideoElement, src: string): Hls | null {
+/* ...which is right for the lightbox and wrong for a card. A card on the helix
+ * is drawn at roughly 120x200 css px on a phone, so the estimate above puts
+ * several *top-rung* streams on screen at once — each one decoded in full and
+ * uploaded to the GPU whole on every decoded frame, to be sampled down into a
+ * postage stamp. That is download, decode and upload all spent on detail that
+ * cannot land on those pixels, and it is spent on the frames where the spiral
+ * is moving.
+ *
+ * The ladder these assets actually publish is two rungs, ~770 Kbps and
+ * ~2.2 Mbps, and its master playlist carries no RESOLUTION at all — so a cap
+ * written against `level.height` would find nothing to compare and quietly
+ * fall through to whatever its no-match branch did. Bitrate is the attribute
+ * that is always there; height is only consulted when a manifest bothers to
+ * declare it. Cards take the highest rung inside both limits, the lightbox
+ * passes limits wide enough to keep the top one.
+ */
+const CARD_MAX_BITRATE = 1_500_000;
+const CARD_MAX_BITRATE_MOBILE = 1_000_000;
+const CARD_MAX_HEIGHT = 480;
+const CARD_MAX_HEIGHT_MOBILE = 360;
+
+/* The cap alone can't be trusted for the *first* fragment: hls.js reads its
+ * start level through firstAutoLevel, and while that does honour
+ * autoLevelCapping, our MANIFEST_PARSED listener is registered after the
+ * library's own, so the read may already have happened. Handing a card stream
+ * an estimate that lands on a capped rung anyway makes the two agree, and
+ * neither depends on which listener ran first. The lightbox keeps the
+ * optimistic figure — there the top rendition is the point.
+ */
+const CARD_BANDWIDTH_ESTIMATE = 1_200_000;
+
+/* Each live stream also holds its own forward buffer. The default 30s of it,
+ * times the streams alive at once, is a lot of memory and a lot of
+ * appendBuffer work on the main thread for clips that loop in a few seconds.
+ */
+const CARD_BUFFER_S = 8;
+
+/* The best rung inside both limits, by bitrate — falling back to the cheapest
+ * rung there is when nothing qualifies, since a cap that matched nothing used
+ * to mean "no cap at all", which is the opposite of what was asked for.
+ */
+const levelCapFor = (
+  levels: readonly { bitrate: number; height?: number }[],
+  maxBitrate: number,
+  maxHeight: number,
+) => {
+  let cap = -1;
+  let cheapest = 0;
+  for (let i = 0; i < levels.length; i++) {
+    const { bitrate, height } = levels[i];
+    if (bitrate < levels[cheapest].bitrate) cheapest = i;
+    if (bitrate > maxBitrate) continue;
+    if (height && height > maxHeight) continue;
+    if (cap === -1 || bitrate > levels[cap].bitrate) cap = i;
+  }
+  return cap === -1 ? cheapest : cap;
+};
+
+type HlsOptions = { maxBitrate: number; maxHeight: number; card?: boolean };
+
+function attachHls(
+  el: HTMLVideoElement,
+  src: string,
+  { maxBitrate, maxHeight, card = false }: HlsOptions,
+): Hls | null {
   el.crossOrigin = "anonymous"; // cross-origin now; without this the WebGL
   // texture upload throws a tainted-canvas security error.
   if (Hls.isSupported()) {
-    const hls = new Hls({ abrEwmaDefaultEstimate: INITIAL_BANDWIDTH_ESTIMATE });
+    const hls = new Hls(
+      card
+        ? {
+            abrEwmaDefaultEstimate: CARD_BANDWIDTH_ESTIMATE,
+            maxBufferLength: CARD_BUFFER_S,
+            backBufferLength: 0,
+          }
+        : { abrEwmaDefaultEstimate: INITIAL_BANDWIDTH_ESTIMATE },
+    );
     hls.on(Hls.Events.ERROR, (_event, data) => {
       console.error("hls.js error", data);
+    });
+    // Levels aren't known until the manifest lands.
+    hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      if (hls.levels.length > 0)
+        hls.autoLevelCapping = levelCapFor(hls.levels, maxBitrate, maxHeight);
     });
     hls.loadSource(src);
     hls.attachMedia(el);
     return hls;
   }
   // Safari (and anything else with native HLS support): no library needed.
+  // Its own player picks the rendition and won't take a cap from us.
   el.src = src;
   return null;
 }
@@ -364,7 +442,7 @@ export default function SpiralCarousel({
     const bankLayers = lowPower ? 1 : 2;
     const banks = (["top", "bottom"] as const).map((side) => {
       const bank = document.createElement("div");
-      bank.className = `cloud-bank cloud-bank--${side}`;
+      bank.className = `cloud-bank cloud-bank--${side}${lowPower ? " cloud-bank--flat" : ""}`;
       for (let layer = 0; layer < bankLayers; layer++) {
         const puffs = document.createElement("div");
         puffs.className = `cloud-puffs cloud-puffs--${layer === 0 ? "near" : "far"}`;
@@ -411,6 +489,8 @@ export default function SpiralCarousel({
     let centerY = centerYFor(verticalGap);
     let ramp = depthRamp(cardCount, verticalGap);
     let maxLive = MAX_LIVE;
+    let cardMaxHeight = CARD_MAX_HEIGHT;
+    let cardMaxBitrate = CARD_MAX_BITRATE;
     let radius = RADIUS;
     let dragSens = DRAG_SENS;
     let maxSpeed = MAX_SPEED;
@@ -486,7 +566,11 @@ export default function SpiralCarousel({
       el.style.cssText =
         "position:absolute;width:1px;height:1px;opacity:0;pointer-events:none";
       host.appendChild(el);
-      const hls = attachHls(el, card.hlsUrl);
+      const hls = attachHls(el, card.hlsUrl, {
+        maxBitrate: cardMaxBitrate,
+        maxHeight: cardMaxHeight,
+        card: true,
+      });
       void el.play().catch(() => {});
 
       const texture = new THREE.VideoTexture(el);
@@ -629,7 +713,12 @@ export default function SpiralCarousel({
       fsVideo.style.pointerEvents = "auto";
 
       fsHls?.destroy();
-      fsHls = attachHls(fsVideo, card.hlsUrl);
+      // Fullscreen: the top rung is the whole point, so both limits are set
+      // past anything a ladder is likely to hold.
+      fsHls = attachHls(fsVideo, card.hlsUrl, {
+        maxBitrate: Infinity,
+        maxHeight: Infinity,
+      });
       fsVideo.currentTime = card.liveVideo?.currentTime ?? 0;
       fsVideo.muted = false;
       void fsVideo.play().catch(() => {});
@@ -706,6 +795,8 @@ export default function SpiralCarousel({
       centerY = centerYFor(verticalGap);
       ramp = depthRamp(cardCount, verticalGap);
       maxLive = mobile ? MAX_LIVE_MOBILE : MAX_LIVE;
+      cardMaxHeight = mobile ? CARD_MAX_HEIGHT_MOBILE : CARD_MAX_HEIGHT;
+      cardMaxBitrate = mobile ? CARD_MAX_BITRATE_MOBILE : CARD_MAX_BITRATE;
       radius = mobile ? RADIUS_MOBILE : RADIUS;
       dragSens = mobile ? DRAG_SENS_MOBILE : DRAG_SENS;
       maxSpeed = mobile ? MAX_SPEED_MOBILE : MAX_SPEED;
@@ -921,6 +1012,15 @@ export default function SpiralCarousel({
           card.reveal *
           (1 - THREE.MathUtils.smoothstep(depth, ramp.cutStart, ramp.cutEnd)) *
           (1 - card.hiding);
+
+        /* A card the fragment stage would discard in full still costs a draw
+         * call, its uniforms, and every fragment of a quad that has swollen to
+         * 1.7x — all to reach `discard` on the last line. The two ways a card
+         * goes to nothing are the opacity cut and full fog, so skip it here
+         * instead. Raycasting doesn't consult `visible`, so hover and tap
+         * targets are unaffected — and the uniforms above are already current
+         * for the frame either way. */
+        mesh.visible = u.uOpacity.value > 0.002 && fog < 1;
 
         // A card counts as "on screen" once its centre falls inside the NDC
         // square; already-live cards get the looser of the two radii so they
