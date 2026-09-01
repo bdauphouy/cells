@@ -117,6 +117,18 @@
   transform: translateX(-50%) scaleY(-1);
 }
 
+/* `screen` has to blend against whatever is underneath, and underneath is a
+ * canvas that repaints every frame — so the compositor redoes the blend over a
+ * bank-sized piece of the screen, twice, sixty times a second, on the device
+ * least able to afford it. The puffs are near-white already, so plain alpha
+ * over the brand blue lands close to the same place; the difference is that
+ * the bank composites once and is then just a layer being moved around.
+ * Applied from the device class in SpiralCarousel, not a media query, since it
+ * follows the same lowPower decision as the shader's quality branch. */
+.cloud-bank--flat {
+  mix-blend-mode: normal;
+}
+
 .cloud-puffs {
   position: absolute;
   inset: 0;

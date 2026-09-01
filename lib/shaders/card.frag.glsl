@@ -145,10 +145,16 @@ void main() {
   float radius = min(mix(0.055, 0.24, uFog), min(halfSize.x, halfSize.y) * 0.9);
   vec2 d = abs((cardUv - 0.5) * aspect) - halfSize + radius;
   float sdf = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - radius;
-  sdf +=
-    (fbm(cardUv * vec2(3.5, 5.5) - uTime * vec2(0.05, 0.09)) - 0.45) *
-    uFog *
-    0.12;
+  // Multiplying by uFog would zero this in clear air but still run the noise
+  // for it — several sin() per fragment on every crisp card on screen, for a
+  // term that is always zero there. uFog is a uniform, so the branch is
+  // coherent across the whole draw call.
+  if (uFog > 0.001) {
+    sdf +=
+      (fbm(cardUv * vec2(3.5, 5.5) - uTime * vec2(0.05, 0.09)) - 0.45) *
+      uFog *
+      0.12;
+  }
   float soft = fwidth(sdf) * 1.5 + uFog * 0.16;
   float alpha = 1.0 - smoothstep(-soft * 0.5, soft * 0.5, sdf);
 
