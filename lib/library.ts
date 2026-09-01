@@ -122,6 +122,7 @@ export type ResolvedCard = {
   posterUrl?: string;
   aspectRatio: string;
   title: string;
+  description?: string;
 };
 
 // What the carousel actually needs: no manual per-card assignment — the
@@ -139,6 +140,7 @@ export async function resolveCards(): Promise<ResolvedCard[]> {
       posterUrl: video.posterUrl,
       aspectRatio: video.aspectRatio,
       title: video.title,
+      description: video.description,
     };
   });
 }

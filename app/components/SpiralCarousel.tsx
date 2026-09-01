@@ -11,6 +11,7 @@ export type ResolvedCard = {
   posterUrl?: string;
   aspectRatio: string;
   title: string;
+  description?: string;
 };
 
 /* ── Video source ──────────────────────────────────────────────────────────
@@ -411,6 +412,7 @@ type Card = {
   hiding: number;
   hlsUrl: string;
   title: string;
+  description?: string;
   posterTexture: THREE.Texture;
   aspectW: number;
   aspectH: number;
@@ -625,6 +627,7 @@ export default function SpiralCarousel({
         hiding: 0,
         hlsUrl: video.hlsUrl,
         title: video.title,
+        description: video.description,
         posterTexture,
         aspectW,
         aspectH,
@@ -720,9 +723,26 @@ export default function SpiralCarousel({
     closeBtn.textContent = "✕";
     closeBtn.style.cssText =
       "position:fixed;top:20px;right:20px;z-index:42;width:40px;height:40px;border-radius:9999px;border:none;background:rgba(20,20,20,0.6);color:#fff;font-size:16px;line-height:1;cursor:pointer;opacity:0;pointer-events:none;transition:opacity 0.3s ease;";
+
+    // Title + description for the open video, anchored bottom-left over the
+    // backdrop like the close button is anchored top-right — both fade in on
+    // the same schedule once the player has finished expanding.
+    const infoPanel = document.createElement("div");
+    infoPanel.style.cssText =
+      "position:fixed;left:20px;bottom:20px;z-index:42;max-width:min(480px,calc(100vw - 40px));opacity:0;transform:translateY(6px);pointer-events:none;transition:opacity 0.3s ease,transform 0.3s ease;";
+    const infoTitle = document.createElement("div");
+    infoTitle.style.cssText =
+      "color:#fff;font-size:16px;font-weight:600;letter-spacing:0.01em;text-shadow:0 2px 12px rgba(0,0,0,0.5);";
+    const infoDescription = document.createElement("div");
+    infoDescription.style.cssText =
+      "margin-top:4px;color:rgba(255,255,255,0.75);font-size:13px;line-height:1.5;text-shadow:0 2px 12px rgba(0,0,0,0.5);";
+    infoPanel.appendChild(infoTitle);
+    infoPanel.appendChild(infoDescription);
+
     document.body.appendChild(backdrop);
     document.body.appendChild(fsVideo);
     document.body.appendChild(closeBtn);
+    document.body.appendChild(infoPanel);
 
     /* The canvas fills a fixed, full-viewport host, so its box only moves
      * when the viewport does. Reading it back from the DOM instead — which
@@ -826,6 +846,11 @@ export default function SpiralCarousel({
       backdrop.style.pointerEvents = "auto";
       fsVideo.style.pointerEvents = "auto";
 
+      infoTitle.textContent = card.title;
+      infoDescription.textContent = card.description ?? "";
+      infoDescription.style.display = card.description ? "block" : "none";
+      infoPanel.style.display = "block";
+
       /* Nothing on the spiral is visible from here — the backdrop is on its
        * way to opaque black over all of it. Every card's decoder is therefore
        * work with no viewer, and it is competing for the main thread with the
@@ -870,6 +895,8 @@ export default function SpiralCarousel({
           backdrop.style.background = "rgba(0,0,0,0.92)";
           closeBtn.style.opacity = "1";
           closeBtn.style.pointerEvents = "auto";
+          infoPanel.style.opacity = "1";
+          infoPanel.style.transform = "translateY(0)";
         });
       });
     };
@@ -898,6 +925,8 @@ export default function SpiralCarousel({
       fsVideo.style.pointerEvents = "none";
       closeBtn.style.opacity = "0";
       closeBtn.style.pointerEvents = "none";
+      infoPanel.style.opacity = "0";
+      infoPanel.style.transform = "translateY(6px)";
 
       fsVideo.muted = true;
 
@@ -906,6 +935,7 @@ export default function SpiralCarousel({
         fsVideo.style.display = "none";
         backdrop.style.display = "none";
         closeBtn.style.display = "none";
+        infoPanel.style.display = "none";
         openCard = null;
         frozen = false;
       }, CLOSE_MS);
@@ -1326,6 +1356,7 @@ export default function SpiralCarousel({
       fsVideo.remove();
       backdrop.remove();
       closeBtn.remove();
+      infoPanel.remove();
       titleLabel.remove();
       for (const card of cards) {
         deactivateCard(card);
