@@ -3,7 +3,7 @@
 import fragmentShader from "@/lib/shaders/card.frag.glsl";
 import vertexShader from "@/lib/shaders/card.vert.glsl";
 import Hls from "hls.js";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import * as THREE from "three";
 
 export type ResolvedCard = {
@@ -433,11 +433,6 @@ export default function SpiralCarousel({
   cards: ResolvedCard[];
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
-  // True once the WebGL scene has painted its first frame — shader
-  // compilation, geometry and the per-card texture setup are all synchronous
-  // work ahead of that, and slow enough on a phone to be worth covering with
-  // a spinner rather than showing a blank brand-colored screen.
-  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -1073,7 +1068,6 @@ export default function SpiralCarousel({
     const timer = new THREE.Timer();
     let elapsed = 0;
     let frame = 0;
-    let firstFrame = true;
     let cursor = ""; // last value written to canvas.style.cursor
     let titleShown = false; // ...and to the title pill, so neither is rewritten
     // Scratch for the live-stream reconciliation, reused rather than
@@ -1221,10 +1215,6 @@ export default function SpiralCarousel({
       candidates.length = 0;
 
       renderer.render(scene, camera);
-      if (firstFrame) {
-        firstFrame = false;
-        setReady(true);
-      }
     };
 
     /* Which cards get a live stream. Runs off the current frame's numbers but
@@ -1357,11 +1347,6 @@ export default function SpiralCarousel({
         ref={hostRef}
         className="absolute inset-0 isolate touch-none overflow-hidden"
       />
-      {!ready && (
-        <div className="pointer-events-none absolute inset-0 z-50 flex items-center justify-center">
-          <div className="h-10 w-10 animate-spin rounded-full border-2 border-white/40 border-t-white" />
-        </div>
-      )}
     </div>
   );
 }
