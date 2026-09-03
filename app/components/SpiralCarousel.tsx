@@ -431,10 +431,20 @@ type Card = {
 
 export default function SpiralCarousel({
   cards: videos,
+  onReady,
 }: {
   cards: ResolvedCard[];
+  /** Called once the scene has painted its first frame. */
+  onReady?: () => void;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  // Read through a ref rather than the effect's deps: a caller passing an
+  // inline callback shouldn't tear down and rebuild the whole WebGL scene
+  // on every one of its own re-renders.
+  const onReadyRef = useRef(onReady);
+  useEffect(() => {
+    onReadyRef.current = onReady;
+  }, [onReady]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -1098,6 +1108,11 @@ export default function SpiralCarousel({
     const timer = new THREE.Timer();
     let elapsed = 0;
     let frame = 0;
+    // Shader compilation, geometry and the per-card texture setup are all
+    // synchronous work ahead of the first paint, and slow enough on a phone
+    // to be worth a caller-side loading screen — this is what tells it the
+    // wait is over.
+    let firstFrame = true;
     let cursor = ""; // last value written to canvas.style.cursor
     let titleShown = false; // ...and to the title pill, so neither is rewritten
     // Scratch for the live-stream reconciliation, reused rather than
@@ -1245,6 +1260,10 @@ export default function SpiralCarousel({
       candidates.length = 0;
 
       renderer.render(scene, camera);
+      if (firstFrame) {
+        firstFrame = false;
+        onReadyRef.current?.();
+      }
     };
 
     /* Which cards get a live stream. Runs off the current frame's numbers but

@@ -439,6 +439,8 @@ export interface AnimatedLogoProps {
   loop?: boolean;
   /** Show the Replay / Morph loop / Sound buttons. Default true. */
   controls?: boolean;
+  /** Any valid CSS color. Default the mark's own near-black. */
+  background?: string;
   className?: string;
 }
 
@@ -450,7 +452,7 @@ export interface AnimatedLogoProps {
  * the standalone logo-morph.html build; only the DOM lookups changed, from
  * global ids to refs, so the component is safe to mount more than once.
  */
-export default function AnimatedLogo({ autoPlay = true, loop = false, controls = true, className }: AnimatedLogoProps) {
+export default function AnimatedLogo({ autoPlay = true, loop = false, controls = true, background = "#08080a", className }: AnimatedLogoProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const markRef = useRef<SVGGElement>(null);
   const outlineRef = useRef<SVGPathElement>(null);
@@ -912,10 +914,14 @@ export default function AnimatedLogo({ autoPlay = true, loop = false, controls =
   }, []);
 
   return (
-    <div ref={rootRef} className={`edition-logo-morph${className ? ` ${className}` : ""}`}>
+    <div
+      ref={rootRef}
+      className={`edition-logo-morph${className ? ` ${className}` : ""}`}
+      style={{ "--bg": background } as React.CSSProperties}
+    >
       <style>{`
         .edition-logo-morph {
-          --bg: #08080a;
+          /* --bg comes from the background prop, set as an inline style. */
           --ink: #ffffff;
           --dim: #6b6b74;
           position: relative;

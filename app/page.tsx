@@ -1,4 +1,4 @@
-import SpiralCarousel from "@/components/SpiralCarousel";
+import CarouselExperience from "@/components/CarouselExperience";
 import { resolveCards } from "@/lib/library";
 import Image from "next/image";
 
@@ -18,7 +18,7 @@ export default async function Home() {
         className="pointer-events-none absolute top-4 left-4 z-10 h-10 w-auto sm:top-6 sm:left-6 sm:h-14"
         priority
       />
-      <SpiralCarousel cards={cards} />
+      <CarouselExperience cards={cards} />
     </main>
   );
 }
