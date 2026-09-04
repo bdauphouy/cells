@@ -48,7 +48,13 @@ export default function CarouselExperience({ cards }: { cards: ResolvedCard[] })
 
   return (
     <>
-      {mountScene && <SpiralCarousel cards={cards} onReady={handleReady} />}
+      {/* `started` is the same flag as the fade, not a later one: the cards
+          arrive as clouds and take a few seconds to condense into reels, so
+          beginning that while the loader is still on its way out means the
+          first thing to come through the fade is already in motion. */}
+      {mountScene && (
+        <SpiralCarousel cards={cards} onReady={handleReady} started={reveal} />
+      )}
       {loaderMounted && (
         <div
           aria-hidden={reveal}
