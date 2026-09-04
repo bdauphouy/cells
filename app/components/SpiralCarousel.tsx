@@ -593,7 +593,7 @@ export default function SpiralCarousel({
     // of reading calmly.
     const titleLabel = document.createElement("div");
     titleLabel.style.cssText =
-      "position:fixed;z-index:30;left:50%;bottom:32px;pointer-events:none;background:#fff;color:#111;font-size:13px;font-weight:500;letter-spacing:0.01em;padding:10px 20px;border-radius:9999px;box-shadow:0 10px 30px rgba(0,0,0,0.18);opacity:0;transform:translate(-50%,6px);transition:opacity 0.25s ease,transform 0.25s ease;white-space:nowrap;max-width:80vw;overflow:hidden;text-overflow:ellipsis;";
+      "position:fixed;z-index:30;left:50%;bottom:32px;pointer-events:none;background:#fff;color:#111;font-size:13px;font-weight:500;letter-spacing:0.01em;padding:10px 20px;border-radius:9999px;opacity:0;transform:translate(-50%,6px);transition:opacity 0.25s ease,transform 0.25s ease;white-space:nowrap;max-width:80vw;overflow:hidden;text-overflow:ellipsis;";
     document.body.appendChild(titleLabel);
 
     // Vapour over both ends of the spiral. Two layers per bank, drifting at
@@ -823,7 +823,7 @@ export default function SpiralCarousel({
      * translate+scale map the fullscreen box onto any rect on screen.
      */
     fsVideo.style.cssText =
-      "position:fixed;z-index:41;display:none;object-fit:cover;box-shadow:0 30px 80px rgba(0,0,0,0.6);outline:none;transform-origin:0 0;will-change:transform;";
+      "position:fixed;z-index:41;display:none;object-fit:cover;outline:none;transform-origin:0 0;will-change:transform;";
     let fsHls: Hls | null = null;
     const closeBtn = document.createElement("button");
     closeBtn.setAttribute("aria-label", "Close video");
@@ -839,10 +839,10 @@ export default function SpiralCarousel({
       "position:fixed;left:20px;bottom:20px;z-index:42;max-width:min(480px,calc(100vw - 40px));opacity:0;transform:translateY(6px);pointer-events:none;transition:opacity 0.3s ease,transform 0.3s ease;";
     const infoTitle = document.createElement("div");
     infoTitle.style.cssText =
-      "color:#fff;font-size:16px;font-weight:600;letter-spacing:0.01em;text-shadow:0 2px 12px rgba(0,0,0,0.5);";
+      "color:#fff;font-size:16px;font-weight:600;letter-spacing:0.01em;";
     const infoDescription = document.createElement("div");
     infoDescription.style.cssText =
-      "margin-top:4px;color:rgba(255,255,255,0.75);font-size:13px;line-height:1.5;text-shadow:0 2px 12px rgba(0,0,0,0.5);";
+      "margin-top:4px;color:rgba(255,255,255,0.75);font-size:13px;line-height:1.5;";
     infoPanel.appendChild(infoTitle);
     infoPanel.appendChild(infoDescription);
 

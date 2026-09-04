@@ -63,9 +63,9 @@ export default function CarouselExperience({ cards }: { cards: ResolvedCard[] })
           }`}
         >
           {/* AnimatedLogo's own background fill shrinks along with it under
-              scale-50, so this wrapper carries the full-viewport brand fill
+              scale-25, so this wrapper carries the full-viewport brand fill
               instead — the mark just floats centered on top of it. */}
-          <AnimatedLogo controls={false} background="transparent" className="scale-50" />
+          <AnimatedLogo controls={false} background="transparent" className="scale-25" />
         </div>
       )}
     </>
