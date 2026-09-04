@@ -164,7 +164,20 @@ function parseAspect(aspectRatio: string): [number, number] {
  */
 const CARD_H = 1.5;
 const CARD_W = (CARD_H * 9) / 16; // Reels are 9:16
-const ANGLE_GAP = 0.85; // radians of orbit per card
+/* Radians of orbit per card — the horizontal lever. The climb is well under
+ * CARD_H, so consecutive cards already overlap vertically and the side-to-side
+ * space you see between them is roughly radius * angleGap less CARD_W, at the
+ * front of the orbit where the cards face the camera.
+ *
+ * Per device, because the no-crossing floor below is a function of the radius:
+ * a wider orbit is flatter relative to a card, so the desktop pair can sit
+ * 0.564 rad apart where the tighter mobile one needs 0.662. Held as one global
+ * this was pinned to the mobile floor on every screen, which cost desktop
+ * about 0.2 world units of needless air. Each is set just clear of its own
+ * floor.
+ */
+const ANGLE_GAP = 0.6;
+const ANGLE_GAP_MOBILE = 0.7;
 const SEGMENTS = 20;
 
 /* How wide the helix orbits, and how far back the camera sits. A portrait
@@ -188,14 +201,15 @@ const CAMERA_Z_MOBILE = 9.2;
  * shortened; see the no-crossing note below for what that costs.
  *
  * `depthRamp` sizes the whole dissolve off cardCount * verticalGap, so
- * widening the gap gives every card more air and more world depth to climb
- * through before wrapping, independent of how many cards there are. 0.55
- * was tuned against a loop held to 10 clips; CARD_COUNT_MOBILE below has
- * since settled at 14, which widens that dissolve zone proportionally and is
- * still worth an eye rather than assumed correct.
+ * tightening the gap packs the strip closer together and shortens the world
+ * depth every card climbs through before wrapping, independent of how many
+ * cards there are. The mobile figure was tuned against a loop held to 10
+ * clips; CARD_COUNT_MOBILE below has since settled at 14, which widens that
+ * dissolve zone proportionally and is still worth an eye rather than assumed
+ * correct.
  */
-const VERTICAL_GAP = 0.62;
-const VERTICAL_GAP_MOBILE = 0.55;
+const VERTICAL_GAP = 0.44;
+const VERTICAL_GAP_MOBILE = 0.4;
 const MOBILE_WIDTH = 768;
 // Matches MAX_LIVE_MOBILE: past that many cards in the loop, the live-stream
 // budget was already refusing the rest a decoder, so they can only ever show
@@ -204,14 +218,21 @@ const CARD_COUNT_MOBILE = 14;
 
 /* No two cards may ever intersect. A curled card reaches its neighbour's plane
  * at (radius + CURL)*cos(a) + (CARD_W/2)*sin(a) - radius, which only stays
- * negative past 0.640 rad at the desktop radius and past 0.737 at the tighter
- * mobile one — so ANGLE_GAP clears it either way. Pairs 7, 8 and 15 steps
- * apart do land back inside that wedge, since a multiple of ANGLE_GAP comes
- * back near a multiple of 2*PI there, but by then they sit far enough apart
- * vertically to clear CARD_H at full swell (2.55 world units) — 4.3 at the
- * desktop climb, and 3.85 at the mobile one, comfortably past the 2.55 floor
- * (7 * verticalGap must clear it, so verticalGap ≳ 0.364 at minimum). The
- * speed distortions in the shader are bounded so they preserve this margin.
+ * negative past 0.564 rad at the desktop radius and past 0.662 at the tighter
+ * mobile one. Each angleGap sits ~0.036 clear of its own floor at the current
+ * CURL, so neither has much room left to give.
+ *
+ * Some pairs do land back inside that wedge, since a multiple of angleGap
+ * comes back near a multiple of 2*PI there — 10, 11, 21, 31 and 32 steps apart
+ * on desktop, 9, 18, 26, 27, 35 and 36 on mobile. By then they sit far enough
+ * apart vertically to clear CARD_H at full swell (2.55 world units): the
+ * closest pair is 4.4 at the desktop climb and 3.6 at the mobile one.
+ *
+ * All three constants move together — CURL sets the wedge, ANGLE_GAP decides
+ * which pairs land back inside it, verticalGap decides whether those pairs
+ * are far enough apart to survive it — so retune none of them on its own, and
+ * re-run the check rather than assuming these figures still hold. The speed
+ * distortions in the shader are bounded so they preserve this margin.
  */
 
 /* The card whose plane squarely faces the camera is the one a quarter turn
@@ -220,8 +241,8 @@ const CARD_COUNT_MOBILE = 14;
  * eye. (The reference hardcodes -0.8, which is this same figure for its own
  * constants.)
  */
-const centerYFor = (verticalGap: number) =>
-  (-Math.PI / 2 / ANGLE_GAP) * verticalGap;
+const centerYFor = (verticalGap: number, angleGap: number) =>
+  (-Math.PI / 2 / angleGap) * verticalGap;
 
 /* ── Motion ────────────────────────────────────────────────────────────────
  * One eased scalar drives everything: `speed` (cards per 60Hz frame) chases
@@ -250,7 +271,13 @@ const DRAG_SENS_MOBILE = 0.00055;
 const MAX_SPEED_MOBILE = 0.2;
 
 /* ── Distortion ──────────────────────────────────────────────────────────── */
-const CURL = 0.18; // how far the middle of a card bulges outward, always on
+/* How far the middle of a card bulges outward, always on. This is what sets
+ * the no-crossing floor on ANGLE_GAP — a flatter card reaches less far round
+ * the cylinder toward its neighbour's plane — so it was traded down from 0.18
+ * to buy the room that pulls the cards closer together. See the no-crossing
+ * note above before raising it again.
+ */
+const CURL = 0.1;
 const LENS = 0.07; // parabolic bow: the spiral leans as it runs off-screen
 const WHIP = 1.1; // lateral smear proportional to scroll speed
 const SQUASH = 0.4; // vertical pinch under speed, capped in the shader
@@ -563,7 +590,8 @@ export default function SpiralCarousel({
     // Layout that follows the viewport rather than the device, filled in by
     // the first resize() below and kept current from then on.
     let verticalGap = VERTICAL_GAP;
-    let centerY = centerYFor(verticalGap);
+    let angleGap = ANGLE_GAP;
+    let centerY = centerYFor(verticalGap, angleGap);
     let ramp = depthRamp(cardCount, verticalGap);
     let maxLive = MAX_LIVE;
     let cardMaxHeight = CARD_MAX_HEIGHT;
@@ -977,7 +1005,8 @@ export default function SpiralCarousel({
       camera.updateMatrixWorld();
 
       verticalGap = mobile ? VERTICAL_GAP_MOBILE : VERTICAL_GAP;
-      centerY = centerYFor(verticalGap);
+      angleGap = mobile ? ANGLE_GAP_MOBILE : ANGLE_GAP;
+      centerY = centerYFor(verticalGap, angleGap);
       ramp = depthRamp(cardCount, verticalGap);
       maxLive = mobile ? MAX_LIVE_MOBILE : MAX_LIVE;
       cardMaxHeight = mobile ? CARD_MAX_HEIGHT_MOBILE : CARD_MAX_HEIGHT;
@@ -1180,7 +1209,7 @@ export default function SpiralCarousel({
           (((card.index - offset) % cardCount) + cardCount) % cardCount;
         const b = slot - (cardCount - 1) / 2;
 
-        const angle = b * ANGLE_GAP;
+        const angle = b * angleGap;
         // Cards fly in from the axis and settle down into place.
         const r = radius * (1 - hidden / 2);
         const y = b * verticalGap + centerY + hidden * 1.5;
