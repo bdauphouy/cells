@@ -164,7 +164,20 @@ function parseAspect(aspectRatio: string): [number, number] {
  */
 const CARD_H = 1.5;
 const CARD_W = (CARD_H * 9) / 16; // Reels are 9:16
-const ANGLE_GAP = 0.85; // radians of orbit per card
+/* Radians of orbit per card — the horizontal lever. The climb is well under
+ * CARD_H, so consecutive cards already overlap vertically and the side-to-side
+ * space you see between them is roughly radius * angleGap less CARD_W, at the
+ * front of the orbit where the cards face the camera.
+ *
+ * Per device, because the no-crossing floor below is a function of the radius:
+ * a wider orbit is flatter relative to a card, so the desktop pair can sit
+ * 0.564 rad apart where the tighter mobile one needs 0.662. Held as one global
+ * this was pinned to the mobile floor on every screen, which cost desktop
+ * about 0.2 world units of needless air. Each is set just clear of its own
+ * floor.
+ */
+const ANGLE_GAP = 0.6;
+const ANGLE_GAP_MOBILE = 0.7;
 const SEGMENTS = 20;
 
 /* How wide the helix orbits, and how far back the camera sits. A portrait
@@ -188,14 +201,15 @@ const CAMERA_Z_MOBILE = 9.2;
  * shortened; see the no-crossing note below for what that costs.
  *
  * `depthRamp` sizes the whole dissolve off cardCount * verticalGap, so
- * widening the gap gives every card more air and more world depth to climb
- * through before wrapping, independent of how many cards there are. 0.55
- * was tuned against a loop held to 10 clips; CARD_COUNT_MOBILE below has
- * since settled at 14, which widens that dissolve zone proportionally and is
- * still worth an eye rather than assumed correct.
+ * tightening the gap packs the strip closer together and shortens the world
+ * depth every card climbs through before wrapping, independent of how many
+ * cards there are. The mobile figure was tuned against a loop held to 10
+ * clips; CARD_COUNT_MOBILE below has since settled at 14, which widens that
+ * dissolve zone proportionally and is still worth an eye rather than assumed
+ * correct.
  */
-const VERTICAL_GAP = 0.62;
-const VERTICAL_GAP_MOBILE = 0.55;
+const VERTICAL_GAP = 0.44;
+const VERTICAL_GAP_MOBILE = 0.4;
 const MOBILE_WIDTH = 768;
 // Matches MAX_LIVE_MOBILE: past that many cards in the loop, the live-stream
 // budget was already refusing the rest a decoder, so they can only ever show
@@ -204,24 +218,41 @@ const CARD_COUNT_MOBILE = 14;
 
 /* No two cards may ever intersect. A curled card reaches its neighbour's plane
  * at (radius + CURL)*cos(a) + (CARD_W/2)*sin(a) - radius, which only stays
- * negative past 0.640 rad at the desktop radius and past 0.737 at the tighter
- * mobile one — so ANGLE_GAP clears it either way. Pairs 7, 8 and 15 steps
- * apart do land back inside that wedge, since a multiple of ANGLE_GAP comes
- * back near a multiple of 2*PI there, but by then they sit far enough apart
- * vertically to clear CARD_H at full swell (2.55 world units) — 4.3 at the
- * desktop climb, and 3.85 at the mobile one, comfortably past the 2.55 floor
- * (7 * verticalGap must clear it, so verticalGap ≳ 0.364 at minimum). The
- * speed distortions in the shader are bounded so they preserve this margin.
+ * negative past 0.564 rad at the desktop radius and past 0.662 at the tighter
+ * mobile one. Each angleGap sits ~0.036 clear of its own floor at the current
+ * CURL, so neither has much room left to give.
+ *
+ * Some pairs do land back inside that wedge, since a multiple of angleGap
+ * comes back near a multiple of 2*PI there — 10, 11, 21, 31 and 32 steps apart
+ * on desktop, 9, 18, 26, 27, 35 and 36 on mobile. By then they sit far enough
+ * apart vertically to clear CARD_H at full swell (2.55 world units): the
+ * closest pair is 4.4 at the desktop climb and 3.6 at the mobile one.
+ *
+ * All three constants move together — CURL sets the wedge, ANGLE_GAP decides
+ * which pairs land back inside it, verticalGap decides whether those pairs
+ * are far enough apart to survive it — so retune none of them on its own, and
+ * re-run the check rather than assuming these figures still hold. The speed
+ * distortions in the shader are bounded so they preserve this margin.
  */
 
 /* The card whose plane squarely faces the camera is the one a quarter turn
- * along, not the one at angle 0 — and by then the helix has already climbed.
- * Drop the helix by that much to land it mid-viewport, plus a little more by
- * eye. (The reference hardcodes -0.8, which is this same figure for its own
- * constants.)
+ * along the orbit, not the one at angle 0. That quarter turn used to be paid
+ * for by dropping the whole helix by the climb it represents, which did land
+ * the front card mid-viewport — but it also left the strip hanging below the
+ * screen's middle by that same amount, and everything measured from the
+ * strip's own centre (the wrap dissolve especially, which is keyed to
+ * distance from slot 0) inherited the offset. The top of the spiral was
+ * fading out barely above the middle of the screen while the bottom ran off
+ * the edge still lit: it ended at the very bottom and never started at the
+ * top.
+ *
+ * Spending the quarter turn as a phase on the orbit instead costs nothing and
+ * leaves slot 0 at y = 0. The strip is then centred on the screen, reaches
+ * equally far past both edges, and the dissolve at either end is the same
+ * distance out. Relative angles and vertical spacing are untouched by a
+ * constant phase, so the no-crossing analysis above still holds exactly.
  */
-const centerYFor = (verticalGap: number) =>
-  (-Math.PI / 2 / ANGLE_GAP) * verticalGap;
+const HELIX_PHASE = Math.PI / 2;
 
 /* ── Motion ────────────────────────────────────────────────────────────────
  * One eased scalar drives everything: `speed` (cards per 60Hz frame) chases
@@ -250,7 +281,13 @@ const DRAG_SENS_MOBILE = 0.00055;
 const MAX_SPEED_MOBILE = 0.2;
 
 /* ── Distortion ──────────────────────────────────────────────────────────── */
-const CURL = 0.18; // how far the middle of a card bulges outward, always on
+/* How far the middle of a card bulges outward, always on. This is what sets
+ * the no-crossing floor on ANGLE_GAP — a flatter card reaches less far round
+ * the cylinder toward its neighbour's plane — so it was traded down from 0.18
+ * to buy the room that pulls the cards closer together. See the no-crossing
+ * note above before raising it again.
+ */
+const CURL = 0.1;
 const LENS = 0.07; // parabolic bow: the spiral leans as it runs off-screen
 const WHIP = 1.1; // lateral smear proportional to scroll speed
 const SQUASH = 0.4; // vertical pinch under speed, capped in the shader
@@ -261,26 +298,34 @@ const SQUASH = 0.4; // vertical pinch under speed, capped in the shader
  * over the same stretch of screen — so it reads as a card swallowed by cloud
  * rather than a card being turned off.
  */
-/* Measured in screen space, not world space: the helix hangs below the origin
- * and its cards sit at every depth, so a world-height rule would have one end
- * dissolving mid-viewport and the other already gone over the edge. */
-const FOG_START = 0.55; // |ndc y| where the haze starts taking the card...
-const FOG_END = 1.05; // ...and where it has taken all of it
+/* Measured in screen space, not world space: the helix's cards sit at every
+ * depth, so the same world height is a different fraction of the way up the
+ * screen for a near card than for a far one, and a world-height rule would
+ * have some of them dissolving mid-viewport and others already gone over the
+ * edge.
+ *
+ * Pushed out from 0.55/1.05 once the strip was centred (see HELIX_PHASE):
+ * with both ends finally reaching equally far, the clear stretch was the
+ * thing left holding the spiral in from the edges. It now runs most of the
+ * way into the cloud banks before it starts going, so the strip reads as
+ * spanning the whole screen and dissolving at the very top and bottom rather
+ * than stopping short of both.
+ */
+const FOG_START = 0.68; // |ndc y| where the haze starts taking the card...
+const FOG_END = 1.18; // ...and where it has taken all of it
 
 /* The same dissolve keyed to raw helix height, taken as a floor, so a card
  * that reaches the wrap without leaving the screen — a far one on a tall
  * viewport — still goes to cloud rather than simply stopping.
  *
  * Written as fractions of the depth a card is fully gone by, rather than as
- * world distances squeezed to fit inside it. The distinction is what the top
- * of a phone screen turned on. The screen-space ramp above is symmetric in
- * |ndc y| while the helix hangs below the origin, so its two ends reach very
- * different heights: on a phone the bottom of the spiral gets to about -0.9
- * and hazes properly, and the top only reaches +0.77 — never leaving the
- * ramp's first third. Everything visible at the top was therefore left to
- * this ramp, which as absolute distances landed at 81%-98% of the reachable
- * depth: a dissolve a slot and a half wide, finishing after the hard cutoff
- * had already started fading the card out. What you saw was the fade.
+ * world distances squeezed to fit inside it. The distinction is what a phone
+ * screen turned on: a narrow, tall frustum holds the whole climb inside the
+ * screen-space ramp's first stretch, so on mobile it is this ramp that does
+ * essentially all the dissolving. As absolute distances it landed at 81%-98%
+ * of the reachable depth — a dissolve a slot and a half wide, finishing after
+ * the hard cutoff had already started fading the card out. What you saw was
+ * the fade.
  *
  * As fractions it spans the same share of the spiral whatever the climb, so
  * the dissolve is three or four cards deep at both ends and on both device
@@ -305,15 +350,36 @@ const depthRamp = (cardCount: number, verticalGap: number) => {
   };
 };
 
-/* How much the plane outgrows its card at full fog, to leave the soft border
- * somewhere to spill. Bounded by the same no-crossing rule as everything else:
- * a card only reaches its neighbour's plane past 1.77x its width.
+/* How much the plane outgrows its card while it is a cloud, to leave the soft
+ * border somewhere to spill and the puff room to be wider than the card. This
+ * is what caps the cloud's width in card.frag.glsl, and it is bounded by the
+ * same no-crossing rule as everything else: a card only reaches its
+ * neighbour's plane past 1.77x its width.
  */
 const FOG_SWELL = 0.7;
+
+/* Where in the fog ramp a card stops being a card. Held off the very start of
+ * the haze so a card goes soft and milky first and only then loses its shape —
+ * the two reading as one continuous thing rather than the silhouette letting
+ * go the instant the fog does. Complete well before the fog ramp ends, which
+ * leaves the top of that ramp to the dispersal in the shader: form the puff,
+ * then tear it up.
+ */
+const CLOUD_FOG_START = 0.18;
+const CLOUD_FOG_END = 0.72;
 
 /* ── Reveal ──────────────────────────────────────────────────────────────── */
 const REVEAL_EASING = 0.055;
 const REVEAL_STAGGER = 0.05; // seconds between each card's entrance
+
+/* A card is born as a puff of vapour and condenses into its reel. Much slower
+ * than REVEAL_EASING on purpose: the entrance — flying in from the axis and
+ * fading up — is over in about a second, and the condensation carries on well
+ * past it, so what you watch after the cards have landed is the shape
+ * resolving rather than the arrival. At 0.014 a card is ~95% formed after
+ * three and a half seconds and the tail is slower still.
+ */
+const FORM_EASING = 0.014;
 
 /* A hovered card only counts as truly clickable — worth naming — once it's
  * fully settled: past its entrance, not yet dissolving into a cloud bank,
@@ -322,6 +388,7 @@ const REVEAL_STAGGER = 0.05; // seconds between each card's entrance
  * discarded that card down to a wisp. */
 const TITLE_REVEAL_MIN = 0.97;
 const TITLE_FOG_MAX = 0.15;
+const TITLE_CLOUD_MAX = 0.12;
 const TITLE_OPACITY_MIN = 0.9;
 
 /* ── Live video activation ────────────────────────────────────────────────
@@ -348,9 +415,15 @@ const VIEWPORT_DEACTIVATE_MOBILE = 1.3;
 
 /* Every card you can see is meant to be playing. The cap exists only so a
  * pathological viewport can't ask for an unbounded number of decoders — it is
- * set above the number of cards that clear the cloud banks at either end (13
- * on a phone, 9 on a desktop, over an 18-card spiral), so in practice it never
- * binds and the whole visible stretch of the spiral is live at once.
+ * set above the number of cards that clear the cloud banks at either end (11
+ * on a phone, 11 on a desktop, over an 18-card spiral), so in practice it
+ * never binds and the whole visible stretch of the spiral is live at once.
+ *
+ * Desktop's figure went up with the centred strip and the wider clear stretch
+ * (see HELIX_PHASE and FOG_START): the same spiral now shows a couple more
+ * cards at a time, and the old cap of 10 would have started binding — which
+ * shows up as the card nearest an edge sitting on its poster while everything
+ * around it plays.
  *
  * This is deliberately more than the device would choose for itself. Each live
  * card is a MediaSource decode, and mobile takes the bottom rung of the ladder
@@ -360,7 +433,7 @@ const VIEWPORT_DEACTIVATE_MOBILE = 1.3;
  * off the render loop. If a device does run out of decoders the symptom is
  * cards stalling on a half-decoded frame, and these are the numbers to lower.
  */
-const MAX_LIVE = 10;
+const MAX_LIVE = 13;
 const MAX_LIVE_MOBILE = 14;
 
 /* Reconciling at 60Hz meant a fast flick tore down and rebuilt streams every
@@ -408,6 +481,7 @@ type Card = {
   index: number;
   delay: number;
   reveal: number;
+  form: number;
   hover: number;
   hiding: number;
   hlsUrl: string;
@@ -432,10 +506,20 @@ type Card = {
 export default function SpiralCarousel({
   cards: videos,
   onReady,
+  started = true,
 }: {
   cards: ResolvedCard[];
   /** Called once the scene has painted its first frame. */
   onReady?: () => void;
+  /**
+   * Whether the cards are allowed to start condensing out of the clouds they
+   * are born as. The scene mounts under a loading screen and spends several
+   * seconds there flying its cards in and warming up their streams — all of
+   * which should stay hidden — but the morph is the one part of the arrival
+   * meant to be watched, so it is held back until the caller says the way is
+   * clear. Everything else still runs on the scene's own clock.
+   */
+  started?: boolean;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   // Read through a ref rather than the effect's deps: a caller passing an
@@ -445,6 +529,11 @@ export default function SpiralCarousel({
   useEffect(() => {
     onReadyRef.current = onReady;
   }, [onReady]);
+  // Same reasoning: flipping this must not remount the scene it is gating.
+  const startedRef = useRef(started);
+  useEffect(() => {
+    startedRef.current = started;
+  }, [started]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -563,7 +652,7 @@ export default function SpiralCarousel({
     // Layout that follows the viewport rather than the device, filled in by
     // the first resize() below and kept current from then on.
     let verticalGap = VERTICAL_GAP;
-    let centerY = centerYFor(verticalGap);
+    let angleGap = ANGLE_GAP;
     let ramp = depthRamp(cardCount, verticalGap);
     let maxLive = MAX_LIVE;
     let cardMaxHeight = CARD_MAX_HEIGHT;
@@ -611,7 +700,6 @@ export default function SpiralCarousel({
           uImageSizes: { value: new THREE.Vector2(aspectW, aspectH) },
           uCurl: { value: CURL },
           uSquash: { value: SQUASH },
-          uCenterY: { value: centerY },
           uLens: { value: LENS },
           uWhip: { value: WHIP },
           uScrollSpeed: { value: 0 },
@@ -620,10 +708,18 @@ export default function SpiralCarousel({
           uOpacity: { value: 1 },
           uHighlight: { value: 0 },
           uFog: { value: 0 },
-          uSwell: { value: 1 },
+          uSwell: { value: 1 + FOG_SWELL },
           uFogDir: { value: 1 },
           uFogColor: { value: fogColor },
           uTime: { value: 0 },
+          // Every card starts life as a cloud, so the first frame it is ever
+          // drawn on is already one — no rectangle flashes before the morph.
+          uCloud: { value: 1 },
+          /* Golden-ratio spacing rather than Math.random: neighbouring cards
+           * get seeds far apart, so no two clouds next to each other come out
+           * of the same corner of the noise, and the scene is the same shape
+           * on every load. */
+          uSeed: { value: (i * 0.6180339887) % 1 },
         },
       });
       const mesh = new THREE.Mesh(geometry, material);
@@ -633,6 +729,7 @@ export default function SpiralCarousel({
         index: i,
         delay: (i % 4) * REVEAL_STAGGER,
         reveal: 0,
+        form: 0,
         hover: 0,
         hiding: 0,
         hlsUrl: video.hlsUrl,
@@ -977,7 +1074,7 @@ export default function SpiralCarousel({
       camera.updateMatrixWorld();
 
       verticalGap = mobile ? VERTICAL_GAP_MOBILE : VERTICAL_GAP;
-      centerY = centerYFor(verticalGap);
+      angleGap = mobile ? ANGLE_GAP_MOBILE : ANGLE_GAP;
       ramp = depthRamp(cardCount, verticalGap);
       maxLive = mobile ? MAX_LIVE_MOBILE : MAX_LIVE;
       cardMaxHeight = mobile ? CARD_MAX_HEIGHT_MOBILE : CARD_MAX_HEIGHT;
@@ -989,8 +1086,6 @@ export default function SpiralCarousel({
       viewportDeactivate = mobile
         ? VIEWPORT_DEACTIVATE_MOBILE
         : VIEWPORT_DEACTIVATE;
-      for (const card of cards)
-        card.mesh.material.uniforms.uCenterY.value = centerY;
 
       canvasRect = canvas.getBoundingClientRect();
       // Keep the open player filling the viewport through a resize; snap
@@ -1107,6 +1202,11 @@ export default function SpiralCarousel({
     const ndc = new THREE.Vector3(); // scratch, for each card's screen height
     const timer = new THREE.Timer();
     let elapsed = 0;
+    // Time since the morph was allowed to start, which is not the same as
+    // time since the scene mounted — see the `started` prop. Only the
+    // cloud-to-card condensation reads this one; the fly-in, the spin and the
+    // vapour's own drift all stay on `elapsed`.
+    let entrance = 0;
     let frame = 0;
     // Shader compilation, geometry and the per-card texture setup are all
     // synchronous work ahead of the first paint, and slow enough on a phone
@@ -1127,6 +1227,7 @@ export default function SpiralCarousel({
       const dt = Math.min(timer.getDelta(), 0.05);
       const step = dt * 60;
       elapsed += dt;
+      if (startedRef.current) entrance += dt;
 
       if (!frozen) {
         speed += (targetSpeed - speed) * (1 - Math.pow(1 - EASING, step));
@@ -1167,6 +1268,9 @@ export default function SpiralCarousel({
           card.reveal +=
             (1 - card.reveal) * (1 - Math.pow(1 - REVEAL_EASING, step));
         }
+        if (entrance > card.delay) {
+          card.form += (1 - card.form) * (1 - Math.pow(1 - FORM_EASING, step));
+        }
         card.hover +=
           ((mesh === hovered ? 1 : 0) - card.hover) *
           (1 - Math.pow(1 - 0.09, step));
@@ -1180,10 +1284,10 @@ export default function SpiralCarousel({
           (((card.index - offset) % cardCount) + cardCount) % cardCount;
         const b = slot - (cardCount - 1) / 2;
 
-        const angle = b * ANGLE_GAP;
+        const angle = b * angleGap + HELIX_PHASE;
         // Cards fly in from the axis and settle down into place.
         const r = radius * (1 - hidden / 2);
-        const y = b * verticalGap + centerY + hidden * 1.5;
+        const y = b * verticalGap + hidden * 1.5;
 
         mesh.position.set(Math.cos(angle) * r, y, Math.sin(angle) * r);
         mesh.rotation.y = -angle + Math.PI / 2;
@@ -1202,7 +1306,20 @@ export default function SpiralCarousel({
           THREE.MathUtils.smoothstep(depth, ramp.wrapFogStart, ramp.wrapFogEnd),
         );
         u.uFog.value = fog;
-        u.uSwell.value = 1 + fog * FOG_SWELL;
+        /* Two ways to be a cloud, and a card is as much of one as the stronger
+         * of them says: it has not finished condensing out of the one it was
+         * born as, or it has drifted far enough into a bank to be going back.
+         * Taking the max rather than adding them means a card that is still
+         * forming while it drifts into the haze never over-swells past the
+         * no-crossing margin. */
+        const cloud = Math.max(
+          1 - card.form,
+          THREE.MathUtils.smoothstep(fog, CLOUD_FOG_START, CLOUD_FOG_END),
+        );
+        u.uCloud.value = cloud;
+        // The plane has to be big enough to hold whichever shape is current;
+        // the cloud is the wide one, so it is the cloud that sizes it.
+        u.uSwell.value = 1 + cloud * FOG_SWELL;
         u.uFogDir.value = ndcY >= 0 ? 1 : -1;
         u.uOpacity.value =
           card.reveal *
@@ -1248,6 +1365,10 @@ export default function SpiralCarousel({
         !!hu &&
         hu.uReveal.value > TITLE_REVEAL_MIN &&
         hu.uFog.value < TITLE_FOG_MAX &&
+        // A card still condensing is a puff of vapour with a hit box: it
+        // reaches full reveal about two seconds before it looks like a card
+        // you could click, and naming it before then labels a cloud.
+        hu.uCloud.value < TITLE_CLOUD_MAX &&
         hu.uOpacity.value > TITLE_OPACITY_MIN;
       if (showTitle !== titleShown) {
         titleShown = showTitle;

@@ -4,7 +4,6 @@ uniform vec2 uPlaneSizes;
 uniform float uCurl;
 uniform float uScrollSpeed;
 uniform float uSquash;
-uniform float uCenterY;
 uniform float uLens;
 uniform float uWhip;
 uniform float uFog;
@@ -39,9 +38,9 @@ void main() {
 
   // Screen-space warps. These shift the projected x only — view depth is
   // untouched, so the cards still sort correctly against each other.
-  // Bow is measured from the helix's visual centre, not the world origin.
-  float bowY = worldPosition.y - uCenterY;
-  viewPosition.x += bowY * bowY * uLens;
+  // Bow is measured from the helix's visual centre, which the phase on the
+  // orbit (see HELIX_PHASE in SpiralCarousel) puts at the world origin.
+  viewPosition.x += worldPosition.y * worldPosition.y * uLens;
   viewPosition.x += sin(uv.y * PI) * uScrollSpeed * uWhip;
 
   gl_Position = projectionMatrix * viewPosition;
