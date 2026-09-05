@@ -1,5 +1,5 @@
-import { Redis } from "@upstash/redis";
 import { SOCIAL_CATALOG, TOOL_CATALOG, type SocialId, type ToolId } from "@/lib/hero-catalog";
+import { db } from "@/lib/kv";
 
 export type HeroTool = { id: ToolId; enabled: boolean };
 // No `href`: the outbound link is derived from the handle by socialHref(), so
@@ -32,21 +32,6 @@ const DEFAULT_SETTINGS: HeroSettings = {
   ],
   cv: null,
 };
-
-// Lazy, not module-top-level: this file is imported at build time too, and
-// the env vars it needs aren't guaranteed to exist yet at that point.
-let _redis: Redis | null = null;
-function db(): Redis {
-  if (!_redis) {
-    const url = process.env.KV_REST_API_URL;
-    const token = process.env.KV_REST_API_TOKEN;
-    if (!url || !token) {
-      throw new Error("KV_REST_API_URL / KV_REST_API_TOKEN are not set");
-    }
-    _redis = new Redis({ url, token });
-  }
-  return _redis;
-}
 
 export async function getHeroSettings(): Promise<HeroSettings> {
   const stored = await db().get<HeroSettings>(HERO_KEY);

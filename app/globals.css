@@ -364,6 +364,24 @@ body:has(.dark) {
 body:has([data-hero]) {
   background: var(--brand);
 }
+
+/* ...and the bounce that gutter exists for, refused outright. The hero's
+ * <main> is fixed to the viewport with its own overflow-hidden, so nothing on
+ * the page has anywhere to scroll — but that governs the element, not the
+ * document, which still rubber-bands and lifts the fixed layer off the canvas
+ * underneath. `overscroll-behavior` is what actually declines the bounce;
+ * `overflow: hidden` alone doesn't on iOS Safari. Set on <html> as well as
+ * <body> because Safari resolves the document's scroll from the root element,
+ * where a rule on <body> alone doesn't reach it.
+ *
+ * Scoped to the hero for the same reason the gutter rule above is: the admin
+ * pages share this <body> and must keep scrolling. Heights stay in
+ * layout.tsx (h-full / min-h-full) rather than being restated here. */
+html:has([data-hero]),
+body:has([data-hero]) {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
 /* ---break---
  */
 @layer base {

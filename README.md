@@ -1,36 +1,71 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Cells Edition
 
-## Getting Started
+Portfolio site for Celeste Cuestas, a video editor from Honduras.
 
-First, run the development server:
+The landing page is a WebGL spiral of video cards: reels ride a vertical helix,
+condense out of cloud banks at either end, and open into a fullscreen lightbox
+on tap. Videos are hosted on Livepeer and played as adaptive HLS, decoded
+straight into a three.js texture.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## Stack
+
+- **Next.js 16** (App Router) on React 19
+- **three.js** for the helix, with the card shaders in `lib/shaders/*.glsl`
+  (loaded through `raw-loader`, configured in `next.config.ts`)
+- **hls.js** for adaptive playback — Safari plays `.m3u8` natively, everything
+  else needs the library to feed MediaSource
+- **Livepeer** for video hosting, encoding and playback URLs
+- **Upstash Redis** for the video library and hero settings
+- **Vercel Blob** for the CV PDF
+- **Tailwind 4** + shadcn/ui for the admin panel
+
+## Layout
+
+```
+app/
+  page.tsx              landing page — resolves cards, renders the carousel
+  components/
+    SpiralCarousel.tsx  the WebGL scene: helix, streams, lightbox
+    CarouselExperience  loading gate in front of the scene
+    HeroOverlay         tools, socials, CV download
+  admin/                password-gated dashboard
+  api/admin/            upload, library and hero-settings routes
+lib/
+  library.ts            video library in Redis + card resolution
+  livepeer.ts           Livepeer client and playback resolution
+  hero-settings.ts      hero overlay content
+  kv.ts                 shared Redis client
+  admin-auth.ts         password check and signed session cookie
+proxy.ts                auth gate for /admin and /api/admin
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Uploads
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+The browser mints a Livepeer asset through `/api/admin/livepeer-upload`, then
+tus-uploads the file **directly to Livepeer** — the bytes never pass through
+this app. The client polls `/api/admin/livepeer-upload/status` until the encode
+is ready, then commits the entry to the library. `reconcileLibrary()` also runs
+on every dashboard load, so assets added or removed in Livepeer Studio catch up
+on their own.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Environment
 
-## Learn More
+```
+ADMIN_PASSWORD          # single shared admin password; also the HMAC key
+LIVEPEER_API_KEY
+KV_REST_API_URL         # Upstash Redis
+KV_REST_API_TOKEN
+BLOB_READ_WRITE_TOKEN   # Vercel Blob, for the CV
+NEXT_PUBLIC_SITE_URL    # optional; falls back to the Vercel production URL
+```
 
-To learn more about Next.js, take a look at the following resources:
+## Development
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+```bash
+pnpm install
+pnpm dev
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+To open the dev server from a phone on the same network, add its IP to
+`allowedDevOrigins` in `next.config.ts` — Next 16's dev CSRF guard rejects
+non-localhost origins otherwise.

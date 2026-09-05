@@ -66,10 +66,10 @@ export default function HeroBio({ bio }: { bio: string }) {
             ? ({ "--bio-full": fullHeight } as React.CSSProperties)
             : undefined
         }
-        className={`overflow-hidden text-[13px] leading-relaxed text-white/90 transition-[max-height] duration-300 ease-out motion-reduce:transition-none sm:max-h-none sm:text-[14px] sm:[mask-image:none] ${
+        className={`overflow-hidden text-[13px] leading-relaxed text-white/90 transition-[max-height] duration-300 ease-out motion-reduce:transition-none sm:mask-none sm:max-h-none sm:text-[14px] ${
           expanded
-            ? "max-h-[var(--bio-full)]"
-            : `${COLLAPSED_CLASS} [mask-image:linear-gradient(to_bottom,#000_55%,transparent)]`
+            ? "max-h-(--bio-full)"
+            : `${COLLAPSED_CLASS} mask-[linear-gradient(to_bottom,#000_55%,transparent)]`
         }`}
       >
         {bio}
