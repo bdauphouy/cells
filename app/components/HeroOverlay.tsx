@@ -1,12 +1,13 @@
 import Image from "next/image";
+import { Download } from "lucide-react";
+import HeroBio from "@/components/HeroBio";
+import { Button } from "@/components/ui/button";
 import { SOCIAL_CATALOG, TOOL_CATALOG, socialHref } from "@/lib/hero-catalog";
 import type { HeroSettings } from "@/lib/hero-settings";
 
 // Sits between the canvas/cloud layers (z-1/2) and the fullscreen video
 // lightbox (z-40+ in SpiralCarousel), so the lightbox backdrop naturally
 // covers this chrome instead of it needing its own visibility logic.
-const CORNER_LABEL = "text-[10px] uppercase tracking-[0.16em] text-white/50";
-
 export default function HeroOverlay({ settings }: { settings: HeroSettings }) {
   const bio = settings.bio.trim();
   const cv = settings.cv;
@@ -24,31 +25,29 @@ export default function HeroOverlay({ settings }: { settings: HeroSettings }) {
 
   return (
     <>
+      {/* z-20 on mobile only: the tools column shares this corner's left edge
+          and comes later in the DOM, so at an equal z-index it would paint
+          over the bio as it expands up into that band. Desktop keeps z-10 —
+          the two never meet there, and the tools stay on top. */}
       {(bio || cv) && (
-        <div className="pointer-events-none absolute bottom-4 left-4 z-10 max-w-[280px] sm:bottom-6 sm:left-6 sm:max-w-[420px]">
-          {bio && (
-            <>
-              <p className={CORNER_LABEL}>About</p>
-              <p className="mt-1.5 text-[13px] leading-relaxed text-white/90 sm:text-[14px]">{bio}</p>
-            </>
-          )}
+        <div className="pointer-events-none absolute bottom-4 left-4 z-20 max-w-[280px] sm:bottom-6 sm:left-6 sm:z-10 sm:max-w-[420px]">
+          {/* On phones the bio sits directly over the video reels, where
+              white-on-bright is unreadable, and it's long enough to want
+              collapsing — both are HeroBio's job, and both stop at `sm`. */}
+          {bio && <HeroBio bio={bio} />}
           {cv && (
-            <a
-              href={cv.downloadUrl}
-              download={cv.filename}
-              className="pointer-events-auto mt-3 inline-flex items-center gap-1.5 rounded-lg border border-white/15 bg-white/10 px-3 py-1.5 text-[12px] text-white/90 backdrop-blur-sm transition-colors duration-200 hover:border-white/60 hover:text-white"
+            <Button
+              variant="ghost"
+              size="sm"
+              nativeButton={false}
+              render={<a href={cv.downloadUrl} download={cv.filename} />}
+              /* Sized up on phones to a comfortable tap target, then back to
+                 the `sm` variant's own metrics from the sm: breakpoint on. */
+              className="pointer-events-auto mt-3 h-10 gap-2 border-white/15 bg-white/10 px-4 text-sm text-white/90 backdrop-blur-sm duration-200 hover:border-white/60 hover:bg-white/10 hover:text-white sm:h-7 sm:gap-1 sm:px-2.5 sm:text-[0.8rem]"
             >
-              <svg viewBox="0 0 16 16" fill="none" aria-hidden className="h-3.5 w-3.5">
-                <path
-                  d="M8 2v8m0 0 3-3m-3 3-3-3M3 13h10"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
+              <Download aria-hidden className="size-4 sm:size-3.5" />
               Download CV
-            </a>
+            </Button>
           )}
         </div>
       )}
@@ -62,14 +61,17 @@ export default function HeroOverlay({ settings }: { settings: HeroSettings }) {
                 <div
                   key={tool.id}
                   title={meta.name}
-                  className="pointer-events-auto flex h-8 w-8 items-center justify-center rounded-lg border border-white/15 bg-white/10 backdrop-blur-sm sm:h-9 sm:w-9"
+                  className="pointer-events-auto flex h-11 w-11 items-center justify-center rounded-lg border border-white/15 bg-white/10 backdrop-blur-sm sm:h-9 sm:w-9"
                 >
+                  {/* The tool marks are app icons that fill their tile far more
+                      than the social glyphs do, so they scale on their own
+                      ratio (~73% of the box) rather than the socials' 55%. */}
                   <Image
                     src={meta.src}
                     alt={meta.name}
-                    width={23}
-                    height={23}
-                    className="h-[23.4px] w-[23.4px]"
+                    width={32}
+                    height={32}
+                    className="h-8 w-8 sm:h-[23.4px] sm:w-[23.4px]"
                   />
                 </div>
               );
@@ -93,9 +95,9 @@ export default function HeroOverlay({ settings }: { settings: HeroSettings }) {
                 rel="noopener noreferrer"
                 title={social.handle}
                 aria-label={social.handle}
-                className="pointer-events-auto flex h-8 w-8 items-center justify-center rounded-lg border border-white/15 bg-white/10 backdrop-blur-sm transition-colors duration-200 hover:border-white/60 sm:h-9 sm:w-9"
+                className="pointer-events-auto flex h-11 w-11 items-center justify-center rounded-lg border border-white/15 bg-white/10 backdrop-blur-sm transition-colors duration-200 hover:border-white/60 sm:h-9 sm:w-9"
               >
-                <Image src={meta.src} alt="" aria-hidden width={20} height={20} className="h-5 w-5" />
+                <Image src={meta.src} alt="" aria-hidden width={24} height={24} className="h-6 w-6 sm:h-5 sm:w-5" />
               </a>
             );
           })}
@@ -107,15 +109,15 @@ export default function HeroOverlay({ settings }: { settings: HeroSettings }) {
               rel="noopener noreferrer"
               title={whatsapp.handle || "WhatsApp"}
               aria-label={whatsapp.handle || "WhatsApp"}
-              className="pointer-events-auto flex h-8 w-8 items-center justify-center rounded-lg border border-white/15 bg-white/10 backdrop-blur-sm transition-colors duration-200 hover:border-white/60 sm:h-9 sm:w-9"
+              className="pointer-events-auto flex h-11 w-11 items-center justify-center rounded-lg border border-white/15 bg-white/10 backdrop-blur-sm transition-colors duration-200 hover:border-white/60 sm:h-9 sm:w-9"
             >
               <Image
                 src={SOCIAL_CATALOG.whatsapp.src}
                 alt=""
                 aria-hidden
-                width={20}
-                height={20}
-                className="h-5 w-5"
+                width={24}
+                height={24}
+                className="h-6 w-6 sm:h-5 sm:w-5"
               />
             </a>
           )}
