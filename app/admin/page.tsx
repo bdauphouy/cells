@@ -309,6 +309,15 @@ export default function AdminPage() {
     [removeJob],
   );
 
+  // The two ways a file arrives — dropped on the zone or picked through the
+  // hidden input — do the same thing with it, including clearing the fields
+  // the job just took its title and description from.
+  const submitFile = (file: File) => {
+    void startUpload(file, title.trim(), description.trim());
+    setTitle("");
+    setDescription("");
+  };
+
   const deleteVideo = async (id: string) => {
     await fetch(`/api/admin/videos/${id}`, { method: "DELETE" });
     setLibrary((prev) => prev.filter((v) => v.id !== id));
@@ -425,11 +434,7 @@ export default function AdminPage() {
                     e.preventDefault();
                     setDragging(false);
                     const file = e.dataTransfer.files[0];
-                    if (file) {
-                      void startUpload(file, title.trim(), description.trim());
-                      setTitle("");
-                      setDescription("");
-                    }
+                    if (file) submitFile(file);
                   }}
                   className={`flex min-h-32 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-center transition-colors ${
                     dragging
@@ -455,15 +460,7 @@ export default function AdminPage() {
                       const file = e.target.files?.[0];
                       // Reset so re-picking the same file still fires change.
                       e.target.value = "";
-                      if (file) {
-                        void startUpload(
-                          file,
-                          title.trim(),
-                          description.trim(),
-                        );
-                        setTitle("");
-                        setDescription("");
-                      }
+                      if (file) submitFile(file);
                     }}
                   />
                 </div>

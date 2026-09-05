@@ -6,13 +6,9 @@ import Hls from "hls.js";
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 
-export type ResolvedCard = {
-  hlsUrl: string;
-  posterUrl?: string;
-  aspectRatio: string;
-  title: string;
-  description?: string;
-};
+// Type-only, so nothing from the library module (Redis, Livepeer) reaches the
+// client bundle — the import is erased at compile time.
+import type { ResolvedCard } from "@/lib/library";
 
 /* ── Video source ──────────────────────────────────────────────────────────
  * Served from Livepeer as adaptive HLS. Safari plays an .m3u8 natively

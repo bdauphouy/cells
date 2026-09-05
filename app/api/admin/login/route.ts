@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import {
   ADMIN_SESSION_COOKIE,
+  SESSION_SECONDS,
   checkPassword,
   createSessionCookie,
 } from "@/lib/admin-auth";
@@ -18,7 +19,7 @@ export async function POST(request: Request) {
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     path: "/",
-    maxAge: 60 * 60 * 24 * 30,
+    maxAge: SESSION_SECONDS,
   });
 
   return Response.json({ ok: true });

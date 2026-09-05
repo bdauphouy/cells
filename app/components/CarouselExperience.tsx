@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import AnimatedLogo from "@/components/AnimatedLogo";
-import SpiralCarousel, { type ResolvedCard } from "@/components/SpiralCarousel";
+import SpiralCarousel from "@/components/SpiralCarousel";
+import type { ResolvedCard } from "@/lib/library";
 
 // The scene is usually ready well under this on desktop, but the mark's
 // intro is itself ~2.4s — cutting away right as it lands reads as an

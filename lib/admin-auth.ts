@@ -5,7 +5,10 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 // token (expiry + HMAC over it) rather than a server-side session store, so
 // there's nothing extra to provision just to keep someone logged in.
 export const ADMIN_SESSION_COOKIE = "admin_session";
-const SESSION_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
+// The cookie's own max-age is set from this too, so the signed expiry and the
+// browser's copy can't drift apart.
+export const SESSION_SECONDS = 60 * 60 * 24 * 30; // 30 days
+const SESSION_MS = SESSION_SECONDS * 1000;
 
 function adminPassword(): string {
   const password = process.env.ADMIN_PASSWORD;
@@ -17,12 +20,16 @@ function sign(payload: string): string {
   return createHmac("sha256", adminPassword()).update(payload).digest("hex");
 }
 
+// Constant-time even when lengths differ, so response timing can't leak how
+// much of a guess was right.
+function secureEquals(expected: string, given: string): boolean {
+  const a = Buffer.from(expected);
+  const b = Buffer.from(given);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 export function checkPassword(candidate: string): boolean {
-  const expected = Buffer.from(adminPassword());
-  const given = Buffer.from(candidate);
-  // Constant-time even when lengths differ, so response timing can't leak
-  // how much of the password a guess got right.
-  return expected.length === given.length && timingSafeEqual(expected, given);
+  return secureEquals(adminPassword(), candidate);
 }
 
 export function createSessionCookie(): string {
@@ -37,7 +44,5 @@ export function verifySessionCookie(value: string | undefined): boolean {
   if (!payload || !signature) return false;
   if (Number(payload) < Date.now()) return false;
 
-  const expected = Buffer.from(sign(payload));
-  const given = Buffer.from(signature);
-  return expected.length === given.length && timingSafeEqual(expected, given);
+  return secureEquals(sign(payload), signature);
 }
