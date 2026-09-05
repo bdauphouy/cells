@@ -105,7 +105,7 @@ export default function HeroSettingsCard() {
       </CardHeader>
       <CardContent className="grid gap-6">
         <div className="grid gap-2">
-          <Label htmlFor="hero-bio">About (bottom-left)</Label>
+          <Label htmlFor="hero-bio">About</Label>
           <Textarea
             id="hero-bio"
             value={settings.bio}
@@ -113,13 +113,13 @@ export default function HeroSettingsCard() {
               setSaved(false);
               setSettings({ ...settings, bio: e.target.value });
             }}
-            placeholder="Short bio shown top-right in the hero"
+            placeholder="Short bio shown in the hero"
             className="min-h-20"
           />
         </div>
 
         <div className="grid gap-2">
-          <Label htmlFor="hero-cv">CV (download button under the About text)</Label>
+          <Label htmlFor="hero-cv">CV</Label>
           <Input
             id="hero-cv"
             type="file"
@@ -161,7 +161,7 @@ export default function HeroSettingsCard() {
         </div>
 
         <div className="grid gap-2">
-          <Label>Tools (left, centred)</Label>
+          <Label>Tools</Label>
           <div className="flex flex-wrap gap-3">
             {settings.tools.map((tool) => {
               const meta = TOOL_CATALOG[tool.id];
@@ -185,7 +185,7 @@ export default function HeroSettingsCard() {
         </div>
 
         <div className="grid gap-3">
-          <Label>Social links (right, centred)</Label>
+          <Label>Social links</Label>
           {settings.socials.map((social) => {
             const meta = SOCIAL_CATALOG[social.id];
             const href = socialHref(social.id, social.handle);

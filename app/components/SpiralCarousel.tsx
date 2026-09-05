@@ -211,9 +211,15 @@ const CAMERA_Z_MOBILE = 9.2;
 const VERTICAL_GAP = 0.44;
 const VERTICAL_GAP_MOBILE = 0.4;
 const MOBILE_WIDTH = 768;
-// Matches MAX_LIVE_MOBILE: past that many cards in the loop, the live-stream
-// budget was already refusing the rest a decoder, so they can only ever show
-// a poster — no reason to carry their <video> element and hls.js instance.
+/* Originally matched to MAX_LIVE_MOBILE — past that many cards the live-stream
+ * budget was refusing the rest a decoder anyway, so carrying their <video>
+ * element and hls.js instance bought nothing. A touch device now runs a single
+ * stream (see MAX_LIVE_TOUCH), so that reason is gone and the figure stands on
+ * the two that are left: it is what VERTICAL_GAP_MOBILE and the
+ * dissolve either side of it were tuned against, and every card past it is
+ * another draw call and another poster in GPU memory for a strip that already
+ * runs off both ends of a phone screen.
+ */
 const CARD_COUNT_MOBILE = 14;
 
 /* No two cards may ever intersect. A curled card reaches its neighbour's plane
@@ -304,15 +310,24 @@ const SQUASH = 0.4; // vertical pinch under speed, capped in the shader
  * have some of them dissolving mid-viewport and others already gone over the
  * edge.
  *
- * Pushed out from 0.55/1.05 once the strip was centred (see HELIX_PHASE):
- * with both ends finally reaching equally far, the clear stretch was the
- * thing left holding the spiral in from the edges. It now runs most of the
- * way into the cloud banks before it starts going, so the strip reads as
- * spanning the whole screen and dissolving at the very top and bottom rather
- * than stopping short of both.
+ * Pushed out to 0.68/1.18 once the strip was centred (see HELIX_PHASE), on the
+ * grounds that the clear stretch was what held the spiral in from the edges —
+ * and pulled back in again because out there the interesting half of the morph
+ * happened off-screen. The card is only fully a cloud at the top of
+ * CLOUD_FOG_END, which at 0.68/1.18 fell at |ndc y| ≈ 1.01: past the edge. What
+ * was left on screen was a reel going soft, never a puff. Slid inward, keeping
+ * the ramp exactly 0.5 wide so its shape and the pace of the morph are
+ * untouched — only where it happens moved. The card now finishes condensing at
+ * ≈ 0.68, is a complete cloud by ≈ 0.75, and is torn up and gone by 0.92,
+ * which is still deep enough into the painted bank (it reaches ndc 0.32) to
+ * read as vapour swallowing the strip rather than the strip stopping short.
+ *
+ * Desktop-side in practice. A phone's frustum is tall enough that these
+ * thresholds are barely reached — the wrap ramp below is what dissolves a card
+ * there, and it still wins the max() at every depth on mobile at these values.
  */
-const FOG_START = 0.68; // |ndc y| where the haze starts taking the card...
-const FOG_END = 1.18; // ...and where it has taken all of it
+const FOG_START = 0.42; // |ndc y| where the haze starts taking the card...
+const FOG_END = 0.92; // ...and where it has taken all of it
 
 /* The same dissolve keyed to raw helix height, taken as a floor, so a card
  * that reaches the wrap without leaving the screen — a far one on a tall
@@ -399,6 +414,9 @@ const TITLE_OPACITY_MIN = 0.9;
  * hovered, which implies on screen too). Cards spend most of the spiral off
  * in the cloud banks at either end, so only a handful are ever live at once
  * despite there being no hard cap.
+ *
+ * A touch device gets exactly one of them, on whichever card is passing the
+ * middle of the screen — see MAX_LIVE_TOUCH.
  */
 const VIEWPORT_ACTIVATE = 0.92; // NDC radius a card must enter to start decoding
 const VIEWPORT_DEACTIVATE = 1.08; // ...and must drift back past to stop — the
@@ -425,16 +443,48 @@ const VIEWPORT_DEACTIVATE_MOBILE = 1.3;
  * shows up as the card nearest an edge sitting on its poster while everything
  * around it plays.
  *
- * This is deliberately more than the device would choose for itself. Each live
- * card is a MediaSource decode, and mobile takes the bottom rung of the ladder
- * (see CARD_MAX_BITRATE_MOBILE) precisely so a dozen of them fit; the texture
- * uploads are already paid only on frames the decoder actually produced, since
- * three's VideoTexture drives them off requestVideoFrameCallback rather than
- * off the render loop. If a device does run out of decoders the symptom is
- * cards stalling on a half-decoded frame, and these are the numbers to lower.
+ * This is deliberately more than the device would choose for itself; the
+ * texture uploads are already paid only on frames the decoder actually
+ * produced, since three's VideoTexture drives them off
+ * requestVideoFrameCallback rather than off the render loop. If a device does
+ * run out of decoders the symptom is cards stalling on a half-decoded frame,
+ * and these are the numbers to lower.
  */
 const MAX_LIVE = 13;
 const MAX_LIVE_MOBILE = 14;
+
+/* A phone gets one. Everything above is a budget for how many decoders a
+ * device can be *asked* for, and a dozen was well past what a phone can answer:
+ * each live card is an hls.js instance appending buffers on the main thread and
+ * a full frame uploaded to the GPU every time its decoder produces one, and a
+ * dozen of those leaves nothing for the spiral itself. That was the stutter
+ * under a swipe.
+ *
+ * Since `priority` is already distance from the centre of the screen, a budget
+ * of one resolves to the card passing through the middle — the one being
+ * looked at. Every other card sits on its poster, which for a Livepeer asset is
+ * the clip's first keyframe (see resolvePlayback), so the rest of the strip
+ * reads as stills and the middle of it plays. Tapping any card still opens the
+ * lightbox, which is its own stream and unaffected by this.
+ *
+ * Keyed to the input device rather than to viewport width, unlike the two caps
+ * above: a desktop window dragged narrow is still a machine that can decode a
+ * dozen streams, and there the fully live spiral is the whole effect.
+ */
+const MAX_LIVE_TOUCH = 1;
+
+/* ...but not while the spiral is moving. At a budget of one, "the middle card"
+ * is a different card every few frames during a flick, and handing the slot
+ * down the strip that fast means building a MediaSource and fetching a manifest
+ * for a card that has already left the middle by the time the first segment
+ * lands — the exact churn RECONCILE_MS and LIVE_GRACE_MS exist to damp, but
+ * arriving through the budget instead of through the reconcile rate. So starts
+ * wait for the strip to be near enough to settled to be worth reading; the
+ * threshold is a little above IDLE_SPEED, so the perpetual idle drift still
+ * counts as settled and the middle card plays without ever being touched.
+ * A stream that already exists is resumed regardless — that is free.
+ */
+const TOUCH_START_MAX_SPEED = 0.01; // cards per 60Hz frame
 
 /* Reconciling at 60Hz meant a fast flick tore down and rebuilt streams every
  * few frames, and building one is expensive enough (MediaSource attach,
@@ -453,10 +503,12 @@ const LIVE_GRACE_MS = 2500; // a departed card keeps its stream this long
 const ACTIVATIONS_PER_TICK = 4;
 
 /* ── Fullscreen ────────────────────────────────────────────────────────────
- * A tap grows the card from its exact on-screen rect into a real
- * <video controls> element — a lightbox, not a modal bolted on top. The
- * card's mesh hides the instant the clone appears in its place, so the
- * handoff reads as one continuous shape rather than a swap.
+ * A tap grows the card from its exact on-screen rect into a real <video>
+ * element — a lightbox, not a modal bolted on top. The card's mesh hides the
+ * instant the clone appears in its place, so the handoff reads as one
+ * continuous shape rather than a swap. The player carries no controls of its
+ * own; the only chrome over it is this component's close button and info
+ * panel.
  */
 /* ── Background grid ──────────────────────────────────────────────────────
  * A faint white grid sits behind the cards at all times; a brighter patch
@@ -488,6 +540,8 @@ type Card = {
   title: string;
   description?: string;
   posterTexture: THREE.Texture;
+  // The same still as a plain URL, for the lightbox's `poster` — see openVideo.
+  posterUrl?: string;
   aspectW: number;
   aspectH: number;
   liveVideo?: HTMLVideoElement;
@@ -631,8 +685,17 @@ export default function SpiralCarousel({
 
     const textureLoader = new THREE.TextureLoader();
 
-    // Livepeer doesn't guarantee a thumbnail for every asset, so a card
-    // without one shows a flat fog-toned fill until its video activates.
+    /* Livepeer doesn't guarantee a thumbnail for every asset, so a card
+     * without one shows a flat fog-toned fill until its video activates.
+     *
+     * These bytes are fogColor's own channels, which three keeps in linear
+     * working space — the same numbers the shader gets through uFogColor. So
+     * this fill and the vapour a card is born from are the same colour only
+     * while the texture is left untagged, which is now the rule for every card
+     * texture anyway (see posterTexture). Tagged sRGB, as it used to be, it was
+     * decoded once more on sample and the flat cards sat visibly darker than
+     * the cloud around them.
+     */
     const makeFallbackTexture = () => {
       const { r, g, b } = fogColor;
       const pixel = new Uint8Array([r * 255, g * 255, b * 255, 255]);
@@ -670,16 +733,41 @@ export default function SpiralCarousel({
       const posterTexture = video.posterUrl
         ? textureLoader.load(video.posterUrl)
         : makeFallbackTexture();
-      posterTexture.colorSpace = THREE.SRGBColorSpace;
-      /* Sampled exactly like the video texture that replaces it, so the swap
-       * is a swap and not a change of look. TextureLoader's defaults are a
-       * mipmapped minFilter, and gl.generateMipmap box-filters the stored
-       * bytes — which for an sRGB texture means averaging gamma-encoded
-       * values, so every level down comes out darker than a correct average.
-       * A card is a postage stamp: the sampler sits a level or two down the
-       * chain there, well into the darkening, while the video texture has no
-       * chain at all. That is the dark filter that lifts the moment a clip
-       * starts — the same frames, correctly exposed for the first time.
+      /* NOT SRGBColorSpace, however much it looks like it should be — that is
+       * the tag that made a poster darker than the clip it stands in for.
+       *
+       * This shader is a bare ShaderMaterial that writes gl_FragColor itself
+       * and includes no <colorspace_fragment>, so nothing re-encodes on the way
+       * out; whatever the sampler returns is what reaches the screen. That puts
+       * the whole scene in sRGB-encoded space, and a texture is right here only
+       * if the GPU hands its bytes over untouched.
+       *
+       * A video texture always does. three passes `texture.isVideoTexture` as
+       * getInternalFormat's `forceLinearTransfer` (WebGLTextures.js), so a
+       * VideoTexture is allocated RGBA8 and sampled raw no matter what its
+       * colorSpace says — the tag below is inert on the video and was only ever
+       * honoured on the poster, which got SRGB8_ALPHA8 and a hardware
+       * sRGB->linear decode on every sample. A mid-grey came back at 0.21
+       * instead of 0.5 and was never encoded back. That is the whole of the
+       * jump: the poster was a stop and a half under the clip, and the picture
+       * lifted the moment the video texture took over.
+       *
+       * Left untagged, both arrive in the same space and the swap is invisible.
+       * Fixing it the other way — tagging both sRGB and adding the output
+       * conversion — would be the colour-managed pipeline, but every constant
+       * in card.frag.glsl was tuned by eye against these values, so it would
+       * relight the whole scene to correct a mismatch nothing else depends on.
+       */
+      posterTexture.colorSpace = THREE.NoColorSpace;
+      /* Filtered exactly like the video texture too, for the same reason.
+       * TextureLoader's defaults are a mipmapped minFilter, and
+       * gl.generateMipmap box-filters the stored bytes — which for
+       * gamma-encoded values means averaging them in the wrong space, so every
+       * level down comes out darker than a correct average. A card is a postage
+       * stamp: the sampler sits a level or two down the chain there, well into
+       * the darkening, while the video texture has no chain at all. This was a
+       * second darkening stacked on the one above, and closing it alone left a
+       * smaller version of the same jump.
        */
       posterTexture.minFilter = THREE.LinearFilter;
       posterTexture.magFilter = THREE.LinearFilter;
@@ -736,6 +824,7 @@ export default function SpiralCarousel({
         title: video.title,
         description: video.description,
         posterTexture,
+        posterUrl: video.posterUrl,
         aspectW,
         aspectH,
         priority: Infinity,
@@ -762,7 +851,10 @@ export default function SpiralCarousel({
       void el.play().catch(() => {});
 
       const texture = new THREE.VideoTexture(el);
-      texture.colorSpace = THREE.SRGBColorSpace;
+      // Matched to the poster it replaces, and honest about what three does
+      // with a video texture either way — see the note on posterTexture. This
+      // line has never had any effect; it now says so.
+      texture.colorSpace = THREE.NoColorSpace;
       texture.minFilter = THREE.LinearFilter;
       texture.magFilter = THREE.LinearFilter;
       texture.generateMipmaps = false;
@@ -810,7 +902,22 @@ export default function SpiralCarousel({
     backdrop.style.cssText =
       "position:fixed;inset:0;z-index:40;background:rgba(0,0,0,0);display:none;transition:background-color 0.5s ease;";
     const fsVideo = document.createElement("video");
-    fsVideo.controls = true;
+    /* No native controls. These are reels a few seconds long that open on a
+     * tap and are meant to be watched, not scrubbed, and every browser's
+     * chrome — timeline, mute, fullscreen, PiP — is a second set of furniture
+     * laid over footage that already fills the screen. On iOS it is also drawn
+     * in a layer above the page, so it wins any overlap with this component's
+     * own chrome rather than sitting under it.
+     *
+     * Two things it did carry that the page still owes the viewer: a way out,
+     * which is the close button, the backdrop, Escape, and now a tap on the
+     * video itself (see the listener by closeVideo); and a way to start
+     * playback if autoplay is refused, which is the muted retry in openVideo.
+     */
+    fsVideo.controls = false;
+    // Still required, and now for the only reason that was ever load-bearing:
+    // without it iOS hands the clip to its own fullscreen player on play, and
+    // that player comes with the full control set this just turned off.
     fsVideo.playsInline = true;
     /* Laid out once at its fullscreen size and never resized again: the open
      * and close animations move it with a transform instead. left/top/width/
@@ -827,16 +934,40 @@ export default function SpiralCarousel({
     let fsHls: Hls | null = null;
     const closeBtn = document.createElement("button");
     closeBtn.setAttribute("aria-label", "Close video");
-    closeBtn.textContent = "✕";
-    closeBtn.style.cssText =
-      "position:fixed;top:20px;right:20px;z-index:42;width:40px;height:40px;border-radius:9999px;border:none;background:rgba(20,20,20,0.6);color:#fff;font-size:16px;line-height:1;cursor:pointer;opacity:0;pointer-events:none;transition:opacity 0.3s ease;";
+    // A drawn X, not the ✕ character it used to be. A <button> doesn't inherit
+    // font-family, so that glyph was resolved in iOS's default button font,
+    // which doesn't carry U+2715 — Safari fell through to a symbol fallback and
+    // drew it at its own size, off the centre the flex box had lined up for it.
+    // The same two strokes as HeroOverlay's lucide icons, so it belongs to the
+    // set; currentColor keeps it on the class's hover transition.
+    closeBtn.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
+      ' stroke-width="2" stroke-linecap="round" aria-hidden="true">' +
+      '<path d="M18 6 6 18M6 6l12 12"/></svg>';
+    // Everything the button looks like *and* where it sits lives in
+    // .lightbox-close, which is the HeroOverlay tile at a breakpoint-dependent
+    // size. What stays here is only what the open and close animations drive.
+    closeBtn.className = "lightbox-close";
+    closeBtn.style.cssText = "display:none;opacity:0;pointer-events:none;";
 
-    // Title + description for the open video, anchored bottom-left over the
-    // backdrop like the close button is anchored top-right — both fade in on
-    // the same schedule once the player has finished expanding.
+    /* Title + description for the open video, anchored bottom-left over the
+     * backdrop like the close button is anchored top-right — both fade in on
+     * the same schedule once the player has finished expanding.
+     *
+     * Scrimmed like the bio panel (see HeroBio) rather than set straight on the
+     * footage: the text sits over whatever the video happens to be showing, and
+     * a bright frame underneath left it unreadable. Same black/45 + blur, so
+     * the two panels read as the same piece of furniture.
+     *
+     * Back on the same 20px inset as the rest of the chrome. It spent a while
+     * lifted to 72px to clear the native control bar iOS anchors inside the
+     * bottom of the video — the description ran straight through the timeline —
+     * but with the controls gone that bar does not exist and the corner is the
+     * panel's own. The safe-area term stays: the home indicator is still there.
+     */
     const infoPanel = document.createElement("div");
     infoPanel.style.cssText =
-      "position:fixed;left:20px;bottom:20px;z-index:42;max-width:min(480px,calc(100vw - 40px));opacity:0;transform:translateY(6px);pointer-events:none;transition:opacity 0.3s ease,transform 0.3s ease;";
+      "position:fixed;left:20px;bottom:calc(20px + env(safe-area-inset-bottom,0px));z-index:42;box-sizing:border-box;max-width:min(480px,calc(100vw - 40px));padding:10px 12px;border-radius:12px;background:rgba(0,0,0,0.45);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);opacity:0;transform:translateY(6px);pointer-events:none;transition:opacity 0.3s ease,transform 0.3s ease;";
     const infoTitle = document.createElement("div");
     infoTitle.style.cssText =
       "color:#fff;font-size:16px;font-weight:600;letter-spacing:0.01em;";
@@ -949,7 +1080,8 @@ export default function SpiralCarousel({
       fsVideo.style.opacity = "0";
       backdrop.style.display = "block";
       fsVideo.style.display = "block";
-      closeBtn.style.display = "block";
+      // flex, not block: the tile centres its glyph (see .lightbox-close).
+      closeBtn.style.display = "flex";
       backdrop.style.pointerEvents = "auto";
       fsVideo.style.pointerEvents = "auto";
 
@@ -975,6 +1107,13 @@ export default function SpiralCarousel({
       }, OPEN_MS);
 
       fsHls?.destroy();
+      /* The still the card was showing, held under the player until its first
+       * frame decodes. On desktop the card usually hands over a warm stream and
+       * this is never seen; on a touch device there is no warm stream by design,
+       * so without it the tap grows a black rectangle out of a picture. With it,
+       * the poster expands and the video takes over underneath it. */
+      if (card.posterUrl) fsVideo.poster = card.posterUrl;
+      else fsVideo.removeAttribute("poster");
       // Fullscreen: the top rung is the whole point, so both limits are set
       // past anything a ladder is likely to hold. Picking up where the card
       // left off is a config value, not a seek — see HlsOptions.startPosition.
@@ -983,8 +1122,18 @@ export default function SpiralCarousel({
         maxHeight: Infinity,
         startPosition: card.liveVideo?.currentTime ?? -1,
       });
+      /* Unmuted playback is only allowed off a user gesture, and this is one —
+       * openVideo runs synchronously out of the pointerup that tapped the card.
+       * When it is refused anyway the clip used to sit on its poster until the
+       * viewer pressed play, which is no longer an option they have: with the
+       * controls gone a refusal is a dead end. Muted always plays, so fall back
+       * to it rather than leave a still frame with no way forward.
+       */
       fsVideo.muted = false;
-      void fsVideo.play().catch(() => {});
+      void fsVideo.play().catch(() => {
+        fsVideo.muted = true;
+        void fsVideo.play().catch(() => {});
+      });
 
       // Force a style flush so the browser commits the start transform before
       // it transitions to the end one, instead of collapsing both into one.
@@ -1050,6 +1199,11 @@ export default function SpiralCarousel({
 
     closeBtn.addEventListener("click", closeVideo);
     backdrop.addEventListener("click", closeVideo);
+    // The player covers most of the screen and, without controls, would
+    // otherwise be the one part of it a tap does nothing to — the backdrop it
+    // sits over is a sibling, so those taps never reach that handler. Closing
+    // on it makes the whole lightbox dismiss the same way wherever it is hit.
+    fsVideo.addEventListener("click", closeVideo);
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") closeVideo();
     };
@@ -1076,7 +1230,11 @@ export default function SpiralCarousel({
       verticalGap = mobile ? VERTICAL_GAP_MOBILE : VERTICAL_GAP;
       angleGap = mobile ? ANGLE_GAP_MOBILE : ANGLE_GAP;
       ramp = depthRamp(cardCount, verticalGap);
-      maxLive = mobile ? MAX_LIVE_MOBILE : MAX_LIVE;
+      maxLive = touchOnly
+        ? MAX_LIVE_TOUCH
+        : mobile
+          ? MAX_LIVE_MOBILE
+          : MAX_LIVE;
       cardMaxHeight = mobile ? CARD_MAX_HEIGHT_MOBILE : CARD_MAX_HEIGHT;
       cardMaxBitrate = mobile ? CARD_MAX_BITRATE_MOBILE : CARD_MAX_BITRATE;
       radius = mobile ? RADIUS_MOBILE : RADIUS;
@@ -1342,8 +1500,12 @@ export default function SpiralCarousel({
         const inViewport = card.liveVideo
           ? edge < viewportDeactivate
           : edge < viewportActivate;
-        // The middle of the screen wins the streams; a hovered card is about
-        // to be opened, so it outranks everything.
+        /* Distance from the middle of the screen, which is what the budget is
+         * handed out by — and at a budget of one (see MAX_LIVE_TOUCH) it is
+         * the whole rule: smallest `edge` wins, so the slot follows the card
+         * passing through the centre. A hovered card is about to be opened, so
+         * it outranks even that.
+         */
         card.priority = card === hoveredCard || card === openCard ? -1 : edge;
         /* A card's centre can sit well inside the NDC square while the card
          * itself is four-fifths eaten by a cloud bank — the helix is longer
@@ -1402,7 +1564,13 @@ export default function SpiralCarousel({
       for (const card of cards) card.wantsLive = false;
       for (let i = 0; i < budget; i++) inView[i].wantsLive = true;
 
-      let starts = ACTIVATIONS_PER_TICK;
+      // See TOUCH_START_MAX_SPEED: with one slot to hand out, a moving strip
+      // would spend it on a card that has left the middle before the stream is
+      // ready. Resumes are exempt; only new streams wait for the strip to slow.
+      let starts =
+        touchOnly && Math.abs(speed) > TOUCH_START_MAX_SPEED
+          ? 0
+          : ACTIVATIONS_PER_TICK;
       for (const card of cards) {
         if (card.wantsLive) {
           card.idleSince = undefined;
@@ -1490,6 +1658,7 @@ export default function SpiralCarousel({
       canvas.removeEventListener("pointerleave", onPointerLeave);
       closeBtn.removeEventListener("click", closeVideo);
       backdrop.removeEventListener("click", closeVideo);
+      fsVideo.removeEventListener("click", closeVideo);
       fsHls?.destroy();
       fsVideo.pause();
       fsVideo.removeAttribute("src");

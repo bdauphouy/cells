@@ -138,21 +138,24 @@
   mask-image: radial-gradient(72% 96% at 50% 4%, black, transparent 80%);
 }
 
+/* Thinned as a set rather than one puff at a time: the three overlap, so the
+ * bank's density is their sum and only a proportional cut keeps the same heap
+ * — trimming one would flatten the shape rather than lighten it. */
 .cloud-puffs--near {
   background-image:
     radial-gradient(
       46% 72% at 22% 42%,
-      rgb(214 229 255 / 0.6),
+      rgb(214 229 255 / 0.2),
       transparent 72%
     ),
     radial-gradient(
       40% 64% at 55% 26%,
-      rgb(214 229 255 / 0.48),
+      rgb(214 229 255 / 0.16),
       transparent 72%
     ),
     radial-gradient(
       48% 76% at 84% 48%,
-      rgb(214 229 255 / 0.56),
+      rgb(214 229 255 / 0.19),
       transparent 72%
     );
   animation: cloud-drift 41s ease-in-out infinite;
@@ -162,12 +165,12 @@
   background-image:
     radial-gradient(
       58% 88% at 32% 28%,
-      rgb(214 229 255 / 0.1),
+      rgb(214 229 255 / 0.034),
       transparent 74%
     ),
     radial-gradient(
       52% 80% at 72% 38%,
-      rgb(214 229 255 / 0.085),
+      rgb(214 229 255 / 0.028),
       transparent 74%
     );
   animation: cloud-drift 67s ease-in-out infinite reverse;
@@ -186,6 +189,89 @@
 @media (prefers-reduced-motion: reduce) {
   .cloud-puffs {
     animation: none;
+  }
+}
+
+/* ── Lightbox close button ─────────────────────────────────────────────────
+ * The same tile as the tool and social chrome in HeroOverlay — 44px square
+ * dropping to 36px from `sm`, hairline white border over a white wash,
+ * brightening its border on hover. Written out here rather than as Tailwind
+ * classes because the lightbox is built imperatively in SpiralCarousel and has
+ * no JSX to hang utilities on; a class keeps the breakpoint and the safe-area
+ * inset, neither of which an inline style can express.
+ *
+ * The tiles are square with a soft radius, not circles: a lone round button in
+ * the corner was the one piece of chrome that didn't belong to the set.
+ *
+ * Position and size live here rather than in the JS that builds the button, so
+ * the media query below can resize it. The JS keeps only what it animates.
+ */
+.lightbox-close {
+  position: fixed;
+  /* A plain screen-edge inset, matching the HeroOverlay tiles. This used to be
+   * pushed down the screen to dodge the audio toggle iOS drew in the player's
+   * own top-right corner; the player has no controls any more (see fsVideo in
+   * SpiralCarousel), so the corner is uncontested at every size and there is
+   * nothing left to dodge. The safe-area term is for standalone mode, where
+   * the page owns the notch. */
+  top: calc(env(safe-area-inset-top, 0px) + 20px);
+  right: 20px;
+  z-index: 42;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  /* iOS draws its own chrome over a <button> otherwise, which is most of what
+   * made this one look wrong there: the border and radius below were being
+   * composited under Safari's own button styling rather than replacing it. */
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid rgb(255 255 255 / 0.15);
+  border-radius: var(--radius-lg);
+  /* No backdrop-filter, unlike the HeroOverlay tiles it copies. Those sit over
+   * a WebGL canvas; this one sits over a playing <video>, which iOS composites
+   * in its own layer — a backdrop filter there has nothing to sample and the
+   * tile came out as a flat grey slab. The backdrop under it is already 92%
+   * black, so the blur was buying nothing anyway; the wash is lifted slightly
+   * to make up for what it did contribute. */
+  background: rgb(255 255 255 / 0.14);
+  color: rgb(255 255 255 / 0.9);
+  line-height: 1;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  /* Opacity is driven from JS for the open/close fade; the rest is hover. */
+  transition:
+    opacity 0.3s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.lightbox-close svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
+/* Gated, because a touch device has no hover to leave: iOS resolves :hover on
+ * tap and then holds it, so the button stayed lit after the one tap it gets. */
+@media (hover: hover) {
+  .lightbox-close:hover {
+    border-color: rgb(255 255 255 / 0.6);
+    color: #fff;
+  }
+}
+
+@media (min-width: 640px) {
+  .lightbox-close {
+    width: 36px;
+    height: 36px;
+  }
+
+  .lightbox-close svg {
+    width: 15px;
+    height: 15px;
   }
 }
 
@@ -220,7 +306,16 @@
 }
 /* ---break---
  */
-.dark {
+/* The second selector is what paints the overscroll gutter on the admin pages.
+ * A dark page opens its scope on its own <main>, but the strip a rubber-band
+ * scroll reveals past either end of the document belongs to the canvas, and the
+ * canvas takes its colour from <body> — one level above that scope, so it was
+ * still resolving the light `--background` the page never uses, and bouncing
+ * the admin dashboard flashed white. Matching the scope from <body> whenever it
+ * holds a dark page puts the gutter on the same token as the page inside it,
+ * rather than restating the colour somewhere it can drift from this block. */
+.dark,
+body:has(.dark) {
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.205 0 0);
@@ -252,6 +347,22 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+}
+
+/* The same gutter, on the hero. Its <main> is fixed to the viewport and painted
+ * `bg-brand`, so nothing on the page ever scrolls — but a rubber-band bounce
+ * still lifts the document off the canvas underneath, and that canvas is drawn
+ * from <body>, which resolves the light `--background` this page has no other
+ * use for. The result was a black screen with a white flash at whichever edge
+ * you pulled from.
+ *
+ * Not `.dark` above: that scope is the admin palette, whose `--background` is a
+ * near-black grey. The hero is true black, and the token that says so is the
+ * one its <main> is already painted with — so the gutter and the page cannot
+ * drift apart. Keyed off the page rather than set on <body> globally, since the
+ * admin pages share that <body> and want their own answer. */
+body:has([data-hero]) {
+  background: var(--brand);
 }
 /* ---break---
  */
