@@ -435,6 +435,18 @@ const POP_PITCH = [1, 1.125, 1.25, 1.5, 1.6875];
 export interface AnimatedLogoProps {
   /** Play the intro on mount. Read once, at mount. Default true. */
   autoPlay?: boolean;
+  /**
+   * Render the finished mark and animate nothing — no intro, and no
+   * per-frame wiggle. Read once, at mount. Default false.
+   *
+   * Not the same as `autoPlay={false}`, which only skips the intro: the
+   * artwork's resting opacity is 0, and it is `play()` that lifts it, so
+   * without this the logo simply never appears. This poses it at the state
+   * the intro would have left it in and then stops the frame loop outright,
+   * which is the point when the logo is covering something that needs the
+   * frame budget more than it does.
+   */
+  still?: boolean;
   /** Start with the idle letter-morph loop running. Read once, at mount. Default false. */
   loop?: boolean;
   /** Show the Replay / Morph loop / Sound buttons. Default true. */
@@ -452,7 +464,7 @@ export interface AnimatedLogoProps {
  * the standalone logo-morph.html build; only the DOM lookups changed, from
  * global ids to refs, so the component is safe to mount more than once.
  */
-export default function AnimatedLogo({ autoPlay = true, loop = false, controls = true, background = "#08080a", className }: AnimatedLogoProps) {
+export default function AnimatedLogo({ autoPlay = true, loop = false, still = false, controls = true, background = "#08080a", className }: AnimatedLogoProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const markRef = useRef<SVGGElement>(null);
   const outlineRef = useRef<SVGPathElement>(null);
@@ -465,6 +477,7 @@ export default function AnimatedLogo({ autoPlay = true, loop = false, controls =
   // that read out of the render path.
   const [autoPlayInit] = useState(autoPlay);
   const [loopInit] = useState(loop);
+  const [stillInit] = useState(still);
 
   const [loopOn, setLoopOn] = useState(loopInit);
   const [soundOn, setSoundOn] = useState(true);
@@ -548,7 +561,14 @@ export default function AnimatedLogo({ autoPlay = true, loop = false, controls =
       stepWiggle(now);
       if (!disposed) rafId = requestAnimationFrame(tick);
     }
-    rafId = requestAnimationFrame(tick);
+    // A still logo never starts the loop at all — leaving the frame budget to
+    // whatever it is covering is most of the point. rAF handles are always
+    // positive, so 0 reliably means "not running"; the controls can still
+    // start it later.
+    const ensureLoop = () => {
+      if (!rafId && !disposed) rafId = requestAnimationFrame(tick);
+    };
+    if (!stillInit) ensureLoop();
 
     const tween = (dur: number, onUpdate: (t: number) => void, opts: { delay?: number; ease?: (t: number) => number } = {}): Promise<void> =>
       new Promise((resolve) => {
@@ -795,6 +815,30 @@ export default function AnimatedLogo({ autoPlay = true, loop = false, controls =
       });
     }
 
+    /* Where reset() puts the artwork before the intro, this puts it where the
+     * intro would have left it: everything opaque, the cells fully unfurled,
+     * the wordmark at full size. Drawn once at wiggleT — the same resting
+     * frame drawBorder(0) above already assumes — so it holds without a loop
+     * behind it. */
+    function settle() {
+      generation++;
+      active.clear();
+      outlineEl.style.opacity = "1";
+      cellStates.forEach((c) => {
+        c.el.style.opacity = "1";
+        c.el.style.transform = "";
+        c.anim.grow = 1;
+        c.anim.draw(wiggleT);
+      });
+      letters.forEach((l) => {
+        l.current = padSubs(l.glyph.subs, l.glyph.subs);
+        flatten(l.current, l.flat);
+        l.el.style.opacity = "1";
+        pose(l, 1);
+        render(l);
+      });
+    }
+
     async function play() {
       reset();
       const gen = generation;
@@ -876,12 +920,16 @@ export default function AnimatedLogo({ autoPlay = true, loop = false, controls =
 
     engineRef.current = {
       replay: () => {
+        ensureLoop();
         void unlockAudio().then(() => play());
       },
       toggleLoop: () => {
         loopOnRef.current = !loopOnRef.current;
         setLoopOn(loopOnRef.current);
-        if (loopOnRef.current) void unlockAudio().then(() => play());
+        if (loopOnRef.current) {
+          ensureLoop();
+          void unlockAudio().then(() => play());
+        }
       },
       toggleSound: () => {
         soundOnInternal = !soundOnInternal;
@@ -895,7 +943,8 @@ export default function AnimatedLogo({ autoPlay = true, loop = false, controls =
     window.addEventListener("pointerdown", onPointerDown, { once: true });
     window.addEventListener("keydown", onKeyDown, { once: true });
 
-    if (autoPlayInit) void play();
+    if (stillInit) settle();
+    else if (autoPlayInit) void play();
 
     return () => {
       disposed = true;
@@ -908,8 +957,8 @@ export default function AnimatedLogo({ autoPlay = true, loop = false, controls =
       if (audio) void audio.close().catch(() => {});
       engineRef.current = null;
     };
-    // Engine is imperative and self-contained; autoPlayInit/loopInit are
-    // captured once via refs on purpose, and the setters above never change.
+    // Engine is imperative and self-contained; autoPlayInit/loopInit/stillInit
+    // are captured once on purpose, and the setters above never change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

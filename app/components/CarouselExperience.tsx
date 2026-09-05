@@ -5,10 +5,11 @@ import AnimatedLogo from "@/components/AnimatedLogo";
 import SpiralCarousel from "@/components/SpiralCarousel";
 import type { ResolvedCard } from "@/lib/library";
 
-// The scene is usually ready well under this on desktop, but the mark's
-// intro is itself ~2.4s — cutting away right as it lands reads as an
-// interruption rather than a completed motion, so the loader holds for at
-// least one full beat regardless of how fast the scene actually was.
+// The scene is usually ready well under this on desktop, so this is what the
+// loader is on screen for in practice. It used to be sized to let the mark's
+// ~2.4s intro finish before cutting away; the mark is static now, so that
+// reason is gone and what's left is a plain hold — worth re-tuning by eye
+// rather than assuming 4s is still right.
 const MIN_LOADER_MS = 4000;
 // How long the fade-out takes, in ms — kept in sync with the transition
 // duration class below so the loader unmounts right as it finishes, not
@@ -65,8 +66,14 @@ export default function CarouselExperience({ cards }: { cards: ResolvedCard[] })
         >
           {/* AnimatedLogo's own background fill shrinks along with it under
               scale-25, so this wrapper carries the full-viewport brand fill
-              instead — the mark just floats centered on top of it. */}
-          <AnimatedLogo controls={false} background="transparent" className="scale-25" />
+              instead — the mark just floats centered on top of it.
+
+              `still`, not `autoPlay={false}`: the latter only skips the intro
+              and would leave the mark invisible, since the artwork's resting
+              opacity is 0. This poses it finished and runs no frame loop, so
+              the loader costs nothing while the scene behind it compiles its
+              shaders and warms up its streams. */}
+          <AnimatedLogo still controls={false} background="transparent" className="scale-25" />
         </div>
       )}
     </>
