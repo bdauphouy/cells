@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import * as tus from "tus-js-client";
 import { Loader2 } from "lucide-react";
+import HeroSettingsCard from "@/components/admin/HeroSettingsCard";
 import { MIN_CARDS } from "@/lib/constants";
 import type { LibraryVideo } from "@/lib/library";
 import { Button } from "@/components/ui/button";
@@ -377,6 +378,8 @@ export default function AdminPage() {
             </Button>
           </div>
         </div>
+
+        <HeroSettingsCard />
 
         <Card className="mb-6">
           <CardHeader>
