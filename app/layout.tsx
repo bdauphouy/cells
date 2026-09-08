@@ -43,8 +43,8 @@ export const metadata: Metadata = {
     "portfolio",
   ],
   alternates: { canonical: "/" },
-  // The og:image / twitter:image tags come from app/opengraph-image.png, which
-  // Next picks up by file convention.
+  // The og:image / twitter:image tags come from app/opengraph-image.tsx, which
+  // Next picks up by file convention and renders at build time.
   openGraph: {
     type: "website",
     siteName: SITE_NAME,

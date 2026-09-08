@@ -11,5 +11,7 @@ export const SITE_URL =
 
 export const SITE_NAME = "Cells Edition";
 export const SITE_TITLE = "Cells Edition — Celeste Cuestas, Video Editor";
+// Kept under ~160 characters so Google, X and Facebook show it without
+// truncating — the full tool list lives in `keywords` instead.
 export const SITE_DESCRIPTION =
-  "Portfolio of Celeste Cuestas, a creative video editor from Honduras: social media content, Instagram Reels and polished video productions cut in DaVinci Resolve, CapCut, Premiere Pro and After Effects.";
+  "Portfolio of Celeste Cuestas, a creative video editor from Honduras: social media content, Instagram Reels and polished video edits cut in DaVinci Resolve.";
