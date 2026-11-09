@@ -48,6 +48,18 @@ is ready, then commits the entry to the library. `reconcileLibrary()` also runs
 on every dashboard load, so assets added or removed in Livepeer Studio catch up
 on their own.
 
+### Watermark
+
+Livepeer has no overlay feature for VOD, and the bytes never reach this app, so
+the watermark is burned in **in the browser, before the tus upload**:
+`lib/burn-watermark.ts` re-encodes the file with WebCodecs (via Mediabunny),
+drawing the logo onto every frame. The logo (PNG/WebP) lives in Vercel Blob,
+its placement settings in Redis (`lib/watermark-settings.ts`), and
+`watermarkRect()` in `lib/watermark.ts` places it for both the admin preview
+and the burn-in. Settings only apply to future uploads — a burned-in mark
+can't be changed after the fact. Browsers without WebCodecs can still upload,
+just without the watermark.
+
 ## Environment
 
 ```

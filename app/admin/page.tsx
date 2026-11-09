@@ -1,14 +1,23 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import * as tus from "tus-js-client";
 import { Loader2 } from "lucide-react";
 import HeroSettingsCard from "@/components/admin/HeroSettingsCard";
+import WatermarkSettingsCard from "@/components/admin/WatermarkSettingsCard";
 import { MIN_CARDS } from "@/lib/constants";
 import type { LibraryVideo } from "@/lib/library";
+import { canBurnWatermark, type WatermarkSettings } from "@/lib/watermark";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -51,6 +60,7 @@ import {
 } from "@/components/ui/pagination";
 
 const POLL_MS = 2000;
+const noopSubscribe = () => () => {};
 const PAGE_SIZE = 5;
 
 type UploadJob = {
@@ -58,8 +68,11 @@ type UploadJob = {
   title: string;
   description: string;
   file: File;
-  state: "uploading" | "processing" | "error";
-  // Only meaningful while uploading — Livepeer's encoding step shows an
+  // Snapshot of the settings at the moment the upload started, so a retry
+  // burns the same mark even if the settings changed since. null = no mark.
+  watermark: WatermarkSettings | null;
+  state: "watermarking" | "uploading" | "processing" | "error";
+  // Meaningful while watermarking and uploading — Livepeer's encoding step shows an
   // indeterminate loader instead, since it reports no progress at all while
   // queued and an unreliable one once transcoding starts.
   progress: number;
@@ -91,11 +104,25 @@ export default function AdminPage() {
   useEffect(() => {
     jobsRef.current = jobs;
   }, [jobs]);
+  const [watermark, setWatermark] = useState<WatermarkSettings | null>(null);
+  // null = follow the saved default; set once the admin toggles the box for
+  // the upload being composed, and reset after it's submitted.
+  const [watermarkOverride, setWatermarkOverride] = useState<boolean | null>(
+    null,
+  );
+  // WebCodecs only exists in the browser: the server snapshot assumes
+  // support so SSR and hydration agree, then the client reads the real value.
+  const watermarkSupported = useSyncExternalStore(
+    noopSubscribe,
+    canBurnWatermark,
+    () => true,
+  );
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollRefs = useRef<Map<string, ReturnType<typeof setTimeout>>>(
     new Map(),
   );
+  const abortRefs = useRef<Map<string, AbortController>>(new Map());
 
   const [editingVideo, setEditingVideo] = useState<LibraryVideo | null>(null);
   const [editTitle, setEditTitle] = useState("");
@@ -105,15 +132,26 @@ export default function AdminPage() {
 
   useEffect(() => {
     (async () => {
+      const res = await fetch("/api/admin/watermark");
+      if (res.ok) setWatermark((await res.json()).settings);
+    })();
+    (async () => {
       const libRes = await fetch("/api/admin/videos");
       const { library } = await libRes.json();
       setLibrary(library);
       setLoaded(true);
     })();
+    const polls = pollRefs.current;
+    const aborts = abortRefs.current;
     return () => {
-      pollRefs.current.forEach((t) => clearTimeout(t));
+      polls.forEach((t) => clearTimeout(t));
+      aborts.forEach((c) => c.abort());
     };
   }, []);
+
+  const watermarkAvailable = watermarkSupported && !!watermark?.logo;
+  const applyWatermark =
+    watermarkAvailable && (watermarkOverride ?? !!watermark?.enabled);
 
   const sortedLibrary = useMemo(
     () => [...library].sort((a, b) => b.createdAt - a.createdAt),
@@ -154,6 +192,8 @@ export default function AdminPage() {
     const t = pollRefs.current.get(id);
     if (t) clearTimeout(t);
     pollRefs.current.delete(id);
+    abortRefs.current.get(id)?.abort();
+    abortRefs.current.delete(id);
     setJobs((prev) => prev.filter((j) => j.id !== id));
   }, []);
 
@@ -219,7 +259,12 @@ export default function AdminPage() {
   // moment this fires — a new upload can start while this one is still
   // uploading or encoding in the background.
   const startUpload = useCallback(
-    async (file: File, jobTitle: string, jobDescription: string) => {
+    async (
+      original: File,
+      jobTitle: string,
+      jobDescription: string,
+      jobWatermark: WatermarkSettings | null,
+    ) => {
       const id =
         typeof crypto.randomUUID === "function"
           ? crypto.randomUUID()
@@ -230,12 +275,54 @@ export default function AdminPage() {
           id,
           title: jobTitle,
           description: jobDescription,
-          file,
-          state: "uploading",
+          file: original,
+          watermark: jobWatermark,
+          state: jobWatermark ? "watermarking" : "uploading",
           progress: 0,
           inLibrary: false,
         },
       ]);
+
+      // The mark is burned in before the Livepeer asset is minted, so a long
+      // re-encode (or a cancel during it) never holds an asset slot.
+      let file = original;
+      if (jobWatermark?.logo) {
+        const controller = new AbortController();
+        abortRefs.current.set(id, controller);
+        try {
+          // Loaded on demand: the encoder library is only needed here.
+          const { burnWatermark, loadWatermarkLogo } = await import(
+            "@/lib/burn-watermark"
+          );
+          const logo = await loadWatermarkLogo(jobWatermark.logo.url);
+          try {
+            file = await burnWatermark(original, jobWatermark, logo, {
+              signal: controller.signal,
+              onProgress: (fraction) => {
+                const pct = Math.round(fraction * 100);
+                updateJob(id, (j) => ({ progress: Math.max(j.progress, pct) }));
+              },
+            });
+          } finally {
+            logo.close();
+          }
+        } catch (err) {
+          // Cancelled: the job is already gone from the list.
+          if (controller.signal.aborted) return;
+          console.error("Watermarking failed", err);
+          updateJob(id, {
+            state: "error",
+            error:
+              err instanceof Error
+                ? err.message
+                : "Couldn't add the watermark.",
+          });
+          return;
+        } finally {
+          abortRefs.current.delete(id);
+        }
+        updateJob(id, { state: "uploading", progress: 0 });
+      }
 
       let tusEndpoint: string;
       let assetId: string;
@@ -243,7 +330,7 @@ export default function AdminPage() {
         const res = await fetch("/api/admin/livepeer-upload", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: file.name }),
+          body: JSON.stringify({ name: original.name }),
         });
         if (!res.ok) {
           const body = await res.json().catch(() => null);
@@ -288,7 +375,7 @@ export default function AdminPage() {
       const job = jobsRef.current.find((j) => j.id === id);
       if (!job) return;
       removeJob(id);
-      void startUpload(job.file, job.title, job.description);
+      void startUpload(job.file, job.title, job.description, job.watermark);
     },
     [removeJob, startUpload],
   );
@@ -313,9 +400,15 @@ export default function AdminPage() {
   // hidden input — do the same thing with it, including clearing the fields
   // the job just took its title and description from.
   const submitFile = (file: File) => {
-    void startUpload(file, title.trim(), description.trim());
+    void startUpload(
+      file,
+      title.trim(),
+      description.trim(),
+      applyWatermark ? watermark : null,
+    );
     setTitle("");
     setDescription("");
+    setWatermarkOverride(null);
   };
 
   const deleteVideo = async (id: string) => {
@@ -390,6 +483,13 @@ export default function AdminPage() {
 
         <HeroSettingsCard />
 
+        {watermark && (
+          <WatermarkSettingsCard
+            settings={watermark}
+            onChange={setWatermark}
+          />
+        )}
+
         <Card className="mb-6">
           <CardHeader>
             <CardTitle>Upload a video</CardTitle>
@@ -419,6 +519,32 @@ export default function AdminPage() {
                   className="min-h-16"
                 />
               </div>
+
+              <label
+                className={`flex items-center gap-2 text-sm ${
+                  watermarkAvailable ? "" : "text-muted-foreground"
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={applyWatermark}
+                  disabled={!watermarkAvailable}
+                  onChange={(e) => setWatermarkOverride(e.target.checked)}
+                  className="accent-foreground"
+                />
+                Add watermark
+                {!watermarkSupported ? (
+                  <span className="text-xs text-muted-foreground">
+                    — not supported in this browser
+                  </span>
+                ) : (
+                  !watermark?.logo && (
+                    <span className="text-xs text-muted-foreground">
+                      — upload a logo in Watermark first
+                    </span>
+                  )
+                )}
+              </label>
 
               {/* Uploads and encodes run in the background per job, so this
                   stays available the whole time — starting one never waits
@@ -505,10 +631,31 @@ export default function AdminPage() {
                     ) : (
                       <>
                         <p className="flex justify-between text-sm text-muted-foreground">
-                          <span>{`Uploading "${job.title}"…`}</span>
-                          <span>{Math.round(job.progress)}%</span>
+                          <span>
+                            {job.state === "watermarking"
+                              ? `Adding watermark to "${job.title}"…`
+                              : `Uploading "${job.title}"…`}
+                          </span>
+                          <span className="flex items-center gap-2">
+                            {Math.round(job.progress)}%
+                            {job.state === "watermarking" && (
+                              <button
+                                type="button"
+                                onClick={() => removeJob(job.id)}
+                                className="underline underline-offset-2 hover:text-foreground"
+                              >
+                                Cancel
+                              </button>
+                            )}
+                          </span>
                         </p>
                         <Progress value={job.progress} />
+                        {job.state === "watermarking" && (
+                          <p className="text-xs text-muted-foreground">
+                            Keep this tab open — the watermark is added on this
+                            device before the upload starts.
+                          </p>
+                        )}
                       </>
                     )}
                   </div>
