@@ -8,11 +8,24 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import Image from "next/image";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import * as tus from "tus-js-client";
-import { Loader2 } from "lucide-react";
+import {
+  CircleAlert,
+  Film,
+  LayoutGrid,
+  Loader2,
+  Pencil,
+  Stamp,
+  Trash2,
+  Upload,
+  UserRound,
+} from "lucide-react";
+import AdminShell, {
+  SectionHeader,
+  StatCard,
+  type AdminNavItem,
+} from "@/components/admin/AdminShell";
 import HeroSettingsCard from "@/components/admin/HeroSettingsCard";
 import WatermarkSettingsCard from "@/components/admin/WatermarkSettingsCard";
 import { MIN_CARDS } from "@/lib/constants";
@@ -61,7 +74,20 @@ import {
 
 const POLL_MS = 2000;
 const noopSubscribe = () => () => {};
-const PAGE_SIZE = 5;
+const PAGE_SIZE = 8;
+
+const SECTION_IDS = ["library", "hero", "watermark"] as const;
+type SectionId = (typeof SECTION_IDS)[number];
+const subscribeHash = (onChange: () => void) => {
+  window.addEventListener("hashchange", onChange);
+  return () => window.removeEventListener("hashchange", onChange);
+};
+const readHash = () => window.location.hash.slice(1);
+
+const dateFormat = new Intl.DateTimeFormat(undefined, {
+  dateStyle: "medium",
+  timeStyle: "short",
+});
 
 type UploadJob = {
   id: string;
@@ -453,191 +479,241 @@ export default function AdminPage() {
     router.replace("/admin/login");
   };
 
+  const hash = useSyncExternalStore(subscribeHash, readHash, () => "");
+  const section: SectionId = SECTION_IDS.includes(hash as SectionId)
+    ? (hash as SectionId)
+    : "library";
+
+  const activeJobs = jobs.filter((j) => j.state !== "error").length;
+  const nav: AdminNavItem<SectionId>[] = [
+    { id: "library", label: "Library", icon: Film, badge: activeJobs },
+    { id: "hero", label: "Hero", icon: UserRound },
+    { id: "watermark", label: "Watermark", icon: Stamp },
+  ];
+
+  const siteCards =
+    library.length === 0 ? 0 : Math.max(MIN_CARDS, library.length);
+  const watermarkStatus = !watermark
+    ? "—"
+    : !watermark.logo
+      ? "No logo"
+      : watermark.enabled
+        ? "On"
+        : "Off";
+
   return (
-    <main className="dark min-h-dvh bg-background p-6 text-foreground sm:p-10">
-      <div className="mx-auto w-full max-w-3xl">
-        <Image
-          src="/logo.svg"
-          alt="Logo"
-          width={140}
-          height={91}
-          className="mb-8 h-10 w-auto"
-          priority
+    <AdminShell nav={nav} active={section} onLogout={logout}>
+      {/* Every section stays mounted and is only hidden, so uploads keep
+          running and unsaved drafts survive switching between them. */}
+      <section hidden={section !== "library"}>
+        <SectionHeader
+          title="Library"
+          description={`Cards on the site fill from this library automatically — looped to reach ${MIN_CARDS} cards, or one card per video once you have more than that.`}
         />
-        <div className="mb-8 flex items-center justify-between">
-          <h1 className="text-xl font-semibold">Video library</h1>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              nativeButton={false}
-              render={<Link href="/" />}
-            >
-              View site
-            </Button>
-            <Button variant="outline" size="sm" onClick={logout}>
-              Log out
-            </Button>
-          </div>
+
+        <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <StatCard
+            label="Videos"
+            icon={Film}
+            value={loaded ? library.length : <Skeleton className="h-8 w-10" />}
+          />
+          <StatCard
+            label="In progress"
+            icon={Loader2}
+            value={activeJobs}
+            hint={activeJobs ? "Keep this tab open" : "Nothing uploading"}
+          />
+          <StatCard
+            label="Cards on site"
+            icon={LayoutGrid}
+            value={loaded ? siteCards : <Skeleton className="h-8 w-10" />}
+          />
+          <StatCard
+            label="Watermark"
+            icon={Stamp}
+            value={watermarkStatus}
+            hint={
+              <a
+                href="#watermark"
+                className="underline-offset-2 hover:text-foreground hover:underline"
+              >
+                Settings
+              </a>
+            }
+          />
         </div>
 
-        <HeroSettingsCard />
-
-        {watermark && (
-          <WatermarkSettingsCard
-            settings={watermark}
-            onChange={setWatermark}
-          />
-        )}
-
-        <Card className="mb-6">
-          <CardHeader>
-            <CardTitle>Upload a video</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid gap-3">
-              <div>
-                <Label htmlFor="title" className="sr-only">
-                  Title
-                </Label>
-                <Input
-                  id="title"
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  placeholder="Title"
-                />
-              </div>
-              <div>
-                <Label htmlFor="description" className="sr-only">
-                  Description
-                </Label>
-                <Textarea
-                  id="description"
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  placeholder="Description (optional)"
-                  className="min-h-16"
-                />
-              </div>
-
-              <label
-                className={`flex items-center gap-2 text-sm ${
-                  watermarkAvailable ? "" : "text-muted-foreground"
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={applyWatermark}
-                  disabled={!watermarkAvailable}
-                  onChange={(e) => setWatermarkOverride(e.target.checked)}
-                  className="accent-foreground"
-                />
-                Add watermark
-                {!watermarkSupported ? (
-                  <span className="text-xs text-muted-foreground">
-                    — not supported in this browser
-                  </span>
-                ) : (
-                  !watermark?.logo && (
-                    <span className="text-xs text-muted-foreground">
-                      — upload a logo in Watermark first
-                    </span>
-                  )
-                )}
-              </label>
-
-              {/* Uploads and encodes run in the background per job, so this
-                  stays available the whole time — starting one never waits
-                  on another. */}
-              {title.trim() ? (
-                <div
-                  onDragOver={(e) => {
-                    e.preventDefault();
-                    setDragging(true);
-                  }}
-                  onDragLeave={() => setDragging(false)}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    setDragging(false);
-                    const file = e.dataTransfer.files[0];
-                    if (file) submitFile(file);
-                  }}
-                  className={`flex min-h-32 flex-col items-center justify-center gap-2 rounded-lg border border-dashed text-center transition-colors ${
-                    dragging
-                      ? "border-primary bg-muted"
-                      : "border-border bg-muted/50"
-                  }`}
-                >
-                  <span className="text-xs text-muted-foreground">
-                    Drag a video file here, or
-                  </span>
-                  <Button
-                    size="sm"
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    Choose a file
-                  </Button>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="video/*"
-                    hidden
-                    onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      // Reset so re-picking the same file still fires change.
-                      e.target.value = "";
-                      if (file) submitFile(file);
-                    }}
+        <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
+          <Card className="lg:sticky lg:top-10 lg:order-2">
+            <CardHeader>
+              <CardTitle>Upload a video</CardTitle>
+              <CardDescription>
+                Uploads run in the background — start as many as you like.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="grid gap-3">
+                <div className="grid gap-1.5">
+                  <Label htmlFor="title">Title</Label>
+                  <Input
+                    id="title"
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    placeholder="Required"
                   />
                 </div>
-              ) : (
-                <div className="flex min-h-32 flex-col items-center justify-center rounded-lg border border-dashed border-border bg-muted/50 text-center text-xs text-muted-foreground">
-                  Enter a title to enable upload
+                <div className="grid gap-1.5">
+                  <Label htmlFor="description">Description</Label>
+                  <Textarea
+                    id="description"
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    placeholder="Optional"
+                    className="min-h-16"
+                  />
                 </div>
-              )}
 
-              {/* Once a job's bytes reach Livepeer it moves down into the
-                  Library list to encode in place — only jobs still being
-                  sent (or that failed before ever reaching Livepeer) show
-                  here. */}
-              {jobs
-                .filter((job) => !job.inLibrary)
-                .map((job) => (
-                  <div key={job.id} className="grid gap-2">
-                    {job.state === "error" ? (
-                      <>
-                        <Alert variant="destructive">
-                          <AlertDescription>
-                            {job.error ?? "Something went wrong."} ({job.title})
-                          </AlertDescription>
-                        </Alert>
-                        <div className="flex gap-2">
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => retryJob(job.id)}
-                          >
-                            Try again
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => removeJob(job.id)}
-                          >
-                            Dismiss
-                          </Button>
-                        </div>
-                      </>
+                <label
+                  className={`flex items-start gap-2 text-sm ${
+                    watermarkAvailable ? "" : "text-muted-foreground"
+                  }`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={applyWatermark}
+                    disabled={!watermarkAvailable}
+                    onChange={(e) => setWatermarkOverride(e.target.checked)}
+                    className="mt-0.5 accent-foreground"
+                  />
+                  <span className="grid gap-0.5">
+                    Add watermark
+                    {!watermarkSupported ? (
+                      <span className="text-xs text-muted-foreground">
+                        Not supported in this browser
+                      </span>
                     ) : (
-                      <>
-                        <p className="flex justify-between text-sm text-muted-foreground">
-                          <span>
+                      !watermark?.logo && (
+                        <span className="text-xs text-muted-foreground">
+                          Upload a logo in{" "}
+                          <a
+                            href="#watermark"
+                            className="underline underline-offset-2 hover:text-foreground"
+                          >
+                            Watermark
+                          </a>{" "}
+                          first
+                        </span>
+                      )
+                    )}
+                  </span>
+                </label>
+
+                {/* Uploads and encodes run in the background per job, so this
+                    stays available the whole time — starting one never waits
+                    on another. */}
+                {title.trim() ? (
+                  <div
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      setDragging(true);
+                    }}
+                    onDragLeave={() => setDragging(false)}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      setDragging(false);
+                      const file = e.dataTransfer.files[0];
+                      if (file) submitFile(file);
+                    }}
+                    className={`flex min-h-32 flex-col items-center justify-center gap-2 rounded-lg border border-dashed p-4 text-center transition-colors ${
+                      dragging
+                        ? "border-primary bg-muted"
+                        : "border-border bg-muted/50"
+                    }`}
+                  >
+                    <Upload className="size-5 text-muted-foreground" />
+                    <span className="text-xs text-muted-foreground">
+                      Drag a video file here, or
+                    </span>
+                    <Button
+                      size="sm"
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      Choose a file
+                    </Button>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="video/*"
+                      hidden
+                      onChange={(e) => {
+                        const file = e.target.files?.[0];
+                        // Reset so re-picking the same file still fires change.
+                        e.target.value = "";
+                        if (file) submitFile(file);
+                      }}
+                    />
+                  </div>
+                ) : (
+                  <div className="flex min-h-32 flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-border bg-muted/50 p-4 text-center text-xs text-muted-foreground">
+                    <Upload className="size-5" />
+                    Enter a title to enable upload
+                  </div>
+                )}
+
+                {/* Once a job's bytes reach Livepeer it moves over into the
+                    Library list to encode in place — only jobs still being
+                    sent (or that failed before ever reaching Livepeer) show
+                    here. */}
+                {jobs
+                  .filter((job) => !job.inLibrary)
+                  .map((job) => (
+                    <div
+                      key={job.id}
+                      className="grid gap-2 rounded-lg border border-border p-3"
+                    >
+                      {job.state === "error" ? (
+                        <>
+                          <p className="flex items-start gap-2 text-sm text-destructive">
+                            <CircleAlert className="mt-0.5 size-4 shrink-0" />
+                            <span className="min-w-0">
+                              {job.error ?? "Something went wrong."}{" "}
+                              <span className="text-muted-foreground">
+                                ({job.title})
+                              </span>
+                            </span>
+                          </p>
+                          <div className="flex gap-2">
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => retryJob(job.id)}
+                            >
+                              Try again
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => removeJob(job.id)}
+                            >
+                              Dismiss
+                            </Button>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <p className="flex justify-between gap-2 text-sm">
+                            <span className="min-w-0 truncate">
+                              {job.title}
+                            </span>
+                            <span className="shrink-0 tabular-nums text-muted-foreground">
+                              {Math.round(job.progress)}%
+                            </span>
+                          </p>
+                          <Progress value={job.progress} />
+                          <p className="flex justify-between gap-2 text-xs text-muted-foreground">
                             {job.state === "watermarking"
-                              ? `Adding watermark to "${job.title}"…`
-                              : `Uploading "${job.title}"…`}
-                          </span>
-                          <span className="flex items-center gap-2">
-                            {Math.round(job.progress)}%
+                              ? "Adding watermark…"
+                              : "Uploading…"}
                             {job.state === "watermarking" && (
                               <button
                                 type="button"
@@ -647,228 +723,260 @@ export default function AdminPage() {
                                 Cancel
                               </button>
                             )}
+                          </p>
+                          {job.state === "watermarking" && (
+                            <p className="text-xs text-muted-foreground">
+                              Keep this tab open — the watermark is added on
+                              this device before the upload starts.
+                            </p>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="lg:order-1">
+            <CardHeader className="border-b">
+              <CardTitle>Videos</CardTitle>
+              <CardDescription>Newest first.</CardDescription>
+            </CardHeader>
+            <CardContent className="px-0">
+              {!loaded ? (
+                <div className="grid gap-3 px-4">
+                  {Array.from({ length: 3 }).map((_, i) => (
+                    <div key={i} className="flex items-center gap-3">
+                      <Skeleton className="h-14 w-9 rounded-md" />
+                      <div className="grid flex-1 gap-1.5">
+                        <Skeleton className="h-4 w-40" />
+                        <Skeleton className="h-3 w-24" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : sortedLibrary.length === 0 && pendingJobs.length === 0 ? (
+                <div className="flex flex-col items-center gap-2 px-4 py-10 text-center text-sm text-muted-foreground">
+                  <Film className="size-6" />
+                  No videos uploaded yet.
+                </div>
+              ) : (
+                <div className="-mt-(--card-spacing) divide-y divide-border">
+                  {/* Uploaded jobs land here the moment their bytes reach
+                      Livepeer, encoding in place, only on the newest page —
+                      they behave like a video that hasn't finished
+                      processing yet, not a separate queue. */}
+                  {currentPage === 1 &&
+                    pendingJobs.map((job) => (
+                      <div
+                        key={job.id}
+                        className="flex items-center gap-3 px-4 py-3"
+                      >
+                        <div className="relative flex h-14 w-9 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted text-muted-foreground ring-1 ring-foreground/10">
+                          {job.state === "error" ? (
+                            <CircleAlert className="size-4 text-destructive" />
+                          ) : (
+                            <div className="loading-stripes absolute inset-0" />
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm">{job.title}</p>
+                          {job.state === "error" ? (
+                            <p className="truncate text-xs text-destructive">
+                              {job.error ?? "Something went wrong."}
+                            </p>
+                          ) : (
+                            <p className="flex items-center gap-1.5 truncate text-xs text-muted-foreground">
+                              <Loader2 className="size-3 shrink-0 animate-spin" />
+                              Encoding…
+                            </p>
+                          )}
+                        </div>
+                        {job.state === "error" ? (
+                          <>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => retryJob(job.id)}
+                            >
+                              Try again
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => removeJob(job.id)}
+                            >
+                              Dismiss
+                            </Button>
+                          </>
+                        ) : (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => cancelJob(job.id)}
+                          >
+                            Cancel
+                          </Button>
+                        )}
+                      </div>
+                    ))}
+                  {pageItems.map((video) => (
+                    <div
+                      key={video.id}
+                      className="group flex items-center gap-3 px-4 py-3 transition-colors hover:bg-muted/40"
+                    >
+                      {video.posterUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={video.posterUrl}
+                          alt=""
+                          className="h-14 w-9 shrink-0 rounded-md object-cover ring-1 ring-foreground/10"
+                        />
+                      ) : (
+                        <div className="h-14 w-9 shrink-0 rounded-md bg-muted ring-1 ring-foreground/10" />
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-medium">
+                          {video.title}
+                        </p>
+                        {video.description && (
+                          <p className="truncate text-xs text-muted-foreground">
+                            {video.description}
+                          </p>
+                        )}
+                        <p className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
+                          <span>{dateFormat.format(video.createdAt)}</span>
+                          <span className="rounded bg-muted px-1 text-[0.65rem] tabular-nums">
+                            {video.aspectRatio}
                           </span>
                         </p>
-                        <Progress value={job.progress} />
-                        {job.state === "watermarking" && (
-                          <p className="text-xs text-muted-foreground">
-                            Keep this tab open — the watermark is added on this
-                            device before the upload starts.
-                          </p>
-                        )}
-                      </>
-                    )}
-                  </div>
-                ))}
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Library</CardTitle>
-            <CardDescription>
-              Cards on the site fill from this library automatically — looped to
-              reach {MIN_CARDS} cards, or one card per video once you have more
-              than that.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="px-0">
-            {!loaded ? (
-              <div className="grid gap-3 px-4">
-                {Array.from({ length: 3 }).map((_, i) => (
-                  <div key={i} className="flex items-center gap-3">
-                    <Skeleton className="h-14 w-9 rounded-md" />
-                    <div className="flex-1 grid gap-1.5">
-                      <Skeleton className="h-4 w-40" />
-                      <Skeleton className="h-3 w-24" />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : sortedLibrary.length === 0 && pendingJobs.length === 0 ? (
-              <p className="px-4 text-sm text-muted-foreground">
-                No videos uploaded yet.
-              </p>
-            ) : (
-              <div className="divide-y divide-border">
-                {/* Uploaded jobs land here the moment their bytes reach
-                    Livepeer, encoding in place, only on the newest page —
-                    they behave like a video that hasn't finished
-                    processing yet, not a separate queue. */}
-                {currentPage === 1 &&
-                  pendingJobs.map((job) => (
-                    <div
-                      key={job.id}
-                      className="flex items-center gap-3 px-4 py-3"
-                    >
-                      <div className="relative flex h-14 w-9 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted text-[10px] tabular-nums text-muted-foreground ring-1 ring-foreground/10">
-                        {job.state === "error" ? (
-                          "!"
-                        ) : (
-                          <div className="loading-stripes absolute inset-0" />
-                        )}
                       </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm">{job.title}</p>
-                        {job.state === "error" ? (
-                          <p className="truncate text-xs text-destructive">
-                            {job.error ?? "Something went wrong."}
-                          </p>
-                        ) : (
-                          <p className="flex items-center gap-1.5 truncate text-xs text-muted-foreground">
-                            <Loader2 className="size-3 shrink-0 animate-spin" />
-                            Encoding…
-                          </p>
-                        )}
-                      </div>
-                      {job.state === "error" ? (
-                        <>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => retryJob(job.id)}
-                          >
-                            Try again
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => removeJob(job.id)}
-                          >
-                            Dismiss
-                          </Button>
-                        </>
-                      ) : (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => cancelJob(job.id)}
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`Edit “${video.title}”`}
+                        onClick={() => openEdit(video)}
+                      >
+                        <Pencil />
+                      </Button>
+                      <AlertDialog>
+                        <AlertDialogTrigger
+                          render={
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              aria-label={`Delete “${video.title}”`}
+                              className="hover:text-destructive"
+                            />
+                          }
                         >
-                          Cancel
-                        </Button>
-                      )}
+                          <Trash2 />
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>
+                              Delete this video?
+                            </AlertDialogTitle>
+                            <AlertDialogDescription>
+                              “{video.title}” will be removed from the library
+                              and deleted from Livepeer. This can’t be undone.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction
+                              variant="destructive"
+                              onClick={() => deleteVideo(video.id)}
+                            >
+                              Delete
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
                     </div>
                   ))}
-                {pageItems.map((video) => (
-                  <div
-                    key={video.id}
-                    className="flex items-center gap-3 px-4 py-3"
-                  >
-                    {video.posterUrl ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={video.posterUrl}
-                        alt={video.title}
-                        className="h-14 w-9 shrink-0 rounded-md object-cover ring-1 ring-foreground/10"
-                      />
-                    ) : (
-                      <div className="h-14 w-9 shrink-0 rounded-md bg-muted ring-1 ring-foreground/10" />
-                    )}
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm">{video.title}</p>
-                      {video.description && (
-                        <p className="truncate text-xs text-muted-foreground">
-                          {video.description}
-                        </p>
-                      )}
-                      <p className="text-xs text-muted-foreground">
-                        {new Date(video.createdAt).toLocaleString()}
-                      </p>
-                    </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => openEdit(video)}
-                    >
-                      Edit
-                    </Button>
-                    <AlertDialog>
-                      <AlertDialogTrigger
-                        render={<Button variant="ghost" size="sm" />}
-                      >
-                        Delete
-                      </AlertDialogTrigger>
-                      <AlertDialogContent>
-                        <AlertDialogHeader>
-                          <AlertDialogTitle>
-                            Delete this video?
-                          </AlertDialogTitle>
-                          <AlertDialogDescription>
-                            “{video.title}” will be removed from the library and
-                            deleted from Livepeer. This can’t be undone.
-                          </AlertDialogDescription>
-                        </AlertDialogHeader>
-                        <AlertDialogFooter>
-                          <AlertDialogCancel>Cancel</AlertDialogCancel>
-                          <AlertDialogAction
-                            variant="destructive"
-                            onClick={() => deleteVideo(video.id)}
-                          >
-                            Delete
-                          </AlertDialogAction>
-                        </AlertDialogFooter>
-                      </AlertDialogContent>
-                    </AlertDialog>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardContent>
-          {pageCount > 1 && (
-            <div className="border-t px-4 py-3">
-              <Pagination>
-                <PaginationContent>
-                  <PaginationItem>
-                    <PaginationPrevious
-                      size="sm"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        setPage((p) => Math.max(1, p - 1));
-                      }}
-                      aria-disabled={currentPage === 1}
-                      className={
-                        currentPage === 1
-                          ? "pointer-events-none opacity-50"
-                          : undefined
-                      }
-                    />
-                  </PaginationItem>
-                  {Array.from({ length: pageCount }).map((_, i) => (
-                    <PaginationItem key={i}>
-                      <PaginationLink
-                        size="icon-sm"
-                        isActive={currentPage === i + 1}
+                </div>
+              )}
+            </CardContent>
+            {pageCount > 1 && (
+              <div className="flex items-center justify-between gap-3 border-t px-4 py-3">
+                <span className="text-xs text-muted-foreground tabular-nums">
+                  {(currentPage - 1) * PAGE_SIZE + 1}–
+                  {Math.min(currentPage * PAGE_SIZE, sortedLibrary.length)} of{" "}
+                  {sortedLibrary.length}
+                </span>
+                <Pagination className="mx-0 w-auto">
+                  <PaginationContent>
+                    <PaginationItem>
+                      <PaginationPrevious
+                        size="sm"
                         onClick={(e) => {
                           e.preventDefault();
-                          setPage(i + 1);
+                          setPage((p) => Math.max(1, p - 1));
                         }}
-                      >
-                        {i + 1}
-                      </PaginationLink>
+                        aria-disabled={currentPage === 1}
+                        className={
+                          currentPage === 1
+                            ? "pointer-events-none opacity-50"
+                            : undefined
+                        }
+                      />
                     </PaginationItem>
-                  ))}
-                  <PaginationItem>
-                    <PaginationNext
-                      size="sm"
-                      onClick={(e) => {
-                        e.preventDefault();
-                        setPage((p) => Math.min(pageCount, p + 1));
-                      }}
-                      aria-disabled={currentPage === pageCount}
-                      className={
-                        currentPage === pageCount
-                          ? "pointer-events-none opacity-50"
-                          : undefined
-                      }
-                    />
-                  </PaginationItem>
-                </PaginationContent>
-              </Pagination>
+                    {Array.from({ length: pageCount }).map((_, i) => (
+                      <PaginationItem key={i}>
+                        <PaginationLink
+                          size="icon-sm"
+                          isActive={currentPage === i + 1}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            setPage(i + 1);
+                          }}
+                        >
+                          {i + 1}
+                        </PaginationLink>
+                      </PaginationItem>
+                    ))}
+                    <PaginationItem>
+                      <PaginationNext
+                        size="sm"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          setPage((p) => Math.min(pageCount, p + 1));
+                        }}
+                        aria-disabled={currentPage === pageCount}
+                        className={
+                          currentPage === pageCount
+                            ? "pointer-events-none opacity-50"
+                            : undefined
+                        }
+                      />
+                    </PaginationItem>
+                  </PaginationContent>
+                </Pagination>
+              </div>
+            )}
+          </Card>
+        </div>
+      </section>
+
+      <section hidden={section !== "hero"}>
+        <HeroSettingsCard />
+      </section>
+
+      <section hidden={section !== "watermark"}>
+        {watermark ? (
+          <WatermarkSettingsCard settings={watermark} onChange={setWatermark} />
+        ) : (
+          <>
+            <SectionHeader title="Watermark" />
+            <div className="grid gap-4 lg:grid-cols-2">
+              <Skeleton className="h-64 rounded-xl" />
+              <Skeleton className="h-64 rounded-xl" />
             </div>
-          )}
-        </Card>
-      </div>
+          </>
+        )}
+      </section>
 
       <Dialog
         open={!!editingVideo}
@@ -879,26 +987,22 @@ export default function AdminPage() {
             <DialogTitle>Edit video</DialogTitle>
           </DialogHeader>
           <div className="grid gap-3">
-            <div>
-              <Label htmlFor="edit-title" className="sr-only">
-                Title
-              </Label>
+            <div className="grid gap-1.5">
+              <Label htmlFor="edit-title">Title</Label>
               <Input
                 id="edit-title"
                 value={editTitle}
                 onChange={(e) => setEditTitle(e.target.value)}
-                placeholder="Title"
+                placeholder="Required"
               />
             </div>
-            <div>
-              <Label htmlFor="edit-description" className="sr-only">
-                Description
-              </Label>
+            <div className="grid gap-1.5">
+              <Label htmlFor="edit-description">Description</Label>
               <Textarea
                 id="edit-description"
                 value={editDescription}
                 onChange={(e) => setEditDescription(e.target.value)}
-                placeholder="Description (optional)"
+                placeholder="Optional"
                 className="min-h-16"
               />
             </div>
@@ -921,6 +1025,6 @@ export default function AdminPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </main>
+    </AdminShell>
   );
 }

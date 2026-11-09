@@ -1,17 +1,26 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { ImagePlus, Loader2, Trash2 } from "lucide-react";
+import { SaveControl, SectionHeader } from "@/components/admin/AdminShell";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import {
   WATERMARK_LIMITS,
   WATERMARK_POSITIONS,
   WATERMARK_POSITION_LABELS,
   watermarkRect,
+  type WatermarkPosition,
   type WatermarkSettings,
 } from "@/lib/watermark";
+import { cn } from "@/lib/utils";
 
 type Props = {
   settings: WatermarkSettings;
@@ -22,9 +31,18 @@ type Props = {
 // placement maths is the same watermarkRect() the burn-in uses, so the
 // preview is exact up to the logo's own pixels.
 const PREVIEW_FRAMES = [
-  { label: "9:16", width: 1080, height: 1920, className: "h-48" },
-  { label: "16:9", width: 1920, height: 1080, className: "h-48" },
+  { label: "9:16", width: 1080, height: 1920, className: "h-56" },
+  { label: "16:9", width: 1920, height: 1080, className: "h-32" },
 ];
+
+// Where each position sits on the 3×3 picker grid.
+const POSITION_CELLS: Record<WatermarkPosition, string> = {
+  "top-left": "col-start-1 row-start-1",
+  "top-right": "col-start-3 row-start-1",
+  center: "col-start-2 row-start-2",
+  "bottom-left": "col-start-1 row-start-3",
+  "bottom-right": "col-start-3 row-start-3",
+};
 
 function Preview({
   settings,
@@ -58,10 +76,53 @@ function Preview({
                 />
               )}
             </div>
-            <figcaption className="text-xs text-muted-foreground">{frame.label}</figcaption>
+            <figcaption className="text-xs text-muted-foreground">
+              {frame.label}
+            </figcaption>
           </figure>
         );
       })}
+    </div>
+  );
+}
+
+function Slider({
+  id,
+  label,
+  value,
+  display,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  value: number;
+  display: string;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <div className="grid gap-2">
+      <div className="flex items-center justify-between">
+        <Label htmlFor={id}>{label}</Label>
+        <span className="text-xs tabular-nums text-muted-foreground">
+          {display}
+        </span>
+      </div>
+      <input
+        id={id}
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="accent-foreground"
+      />
     </div>
   );
 }
@@ -70,11 +131,19 @@ export default function WatermarkSettingsCard({ settings, onChange }: Props) {
   // Edited locally and only pushed up on save, so an unsaved tweak never
   // leaks into an upload started in the meantime.
   const [draft, setDraft] = useState(settings);
-  const [logoSize, setLogoSize] = useState<{ width: number; height: number } | null>(null);
+  const [logoSize, setLogoSize] = useState<{
+    width: number;
+    height: number;
+  } | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [logoBusy, setLogoBusy] = useState(false);
   const [error, setError] = useState("");
+  const logoInputRef = useRef<HTMLInputElement>(null);
+
+  // `settings` is what's live; the logo is persisted on upload, so only the
+  // fields behind "Save changes" can make these differ.
+  const dirty = JSON.stringify(draft) !== JSON.stringify(settings);
 
   const edit = (patch: Partial<WatermarkSettings>) => {
     setSaved(false);
@@ -95,7 +164,10 @@ export default function WatermarkSettingsCard({ settings, onChange }: Props) {
     try {
       const body = new FormData();
       body.append("file", file);
-      const res = await fetch("/api/admin/watermark/logo", { method: "POST", body });
+      const res = await fetch("/api/admin/watermark/logo", {
+        method: "POST",
+        body,
+      });
       const data = await res.json().catch(() => null);
       if (!res.ok) {
         setError(data?.error ?? "Couldn't upload the logo.");
@@ -111,7 +183,9 @@ export default function WatermarkSettingsCard({ settings, onChange }: Props) {
     setLogoBusy(true);
     setError("");
     try {
-      const res = await fetch("/api/admin/watermark/logo", { method: "DELETE" });
+      const res = await fetch("/api/admin/watermark/logo", {
+        method: "DELETE",
+      });
       if (!res.ok) {
         setError("Couldn't remove the logo.");
         return;
@@ -146,153 +220,207 @@ export default function WatermarkSettingsCard({ settings, onChange }: Props) {
   };
 
   return (
-    <Card className="mb-6">
-      <CardHeader>
-        <CardTitle>Watermark</CardTitle>
-        <CardDescription>
-          Burned into each video in the browser before it uploads. Changes apply to
-          future uploads only — videos already in the library keep the watermark
-          they were uploaded with.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="grid gap-6">
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={draft.enabled}
-            onChange={(e) => edit({ enabled: e.target.checked })}
-            className="accent-foreground"
+    <>
+      <SectionHeader
+        title="Watermark"
+        description="Burned into each video in the browser before it uploads. Changes apply to future uploads only."
+        actions={
+          <SaveControl
+            dirty={dirty}
+            saving={saving}
+            saved={saved}
+            onSave={save}
           />
-          Watermark new uploads by default
-        </label>
+        }
+      />
 
-        <div className="grid gap-2">
-          <Label htmlFor="watermark-logo">Logo</Label>
-          <Input
-            id="watermark-logo"
-            type="file"
-            accept="image/png,image/webp"
-            disabled={logoBusy}
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              e.target.value = "";
-              if (file) uploadLogo(file);
-            }}
-          />
-          {logoBusy && <p className="text-xs text-muted-foreground">Working...</p>}
-          {draft.logo ? (
-            <p className="flex items-center gap-2 text-xs text-muted-foreground">
-              <a
-                href={draft.logo.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="underline underline-offset-2"
-              >
-                {draft.logo.filename}
-              </a>
-              <button
-                type="button"
-                onClick={removeLogo}
-                disabled={logoBusy}
-                className="underline underline-offset-2 hover:text-foreground"
-              >
-                Remove
-              </button>
-              {/* Hidden probe for the logo's natural size, which the
-                  preview needs to place it the way the burn-in will. */}
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={draft.logo.url}
-                alt=""
+      {error && <p className="mb-4 text-sm text-destructive">{error}</p>}
+
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+        <div className="grid gap-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>Logo</CardTitle>
+              <CardDescription>
+                PNG or WebP with a transparent background, up to 2MB. Saved as
+                soon as it&apos;s uploaded.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-3">
+              <input
+                ref={logoInputRef}
+                id="watermark-logo"
+                type="file"
+                accept="image/png,image/webp"
                 hidden
-                onLoad={(e) =>
-                  setLogoSize({
-                    width: e.currentTarget.naturalWidth,
-                    height: e.currentTarget.naturalHeight,
-                  })
-                }
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  if (file) uploadLogo(file);
+                }}
               />
-            </p>
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              No logo — uploads go through without a watermark. PNG or WebP with a
-              transparent background, up to 2MB.
-            </p>
-          )}
+              {draft.logo ? (
+                <div className="flex items-center gap-3 rounded-lg border border-border p-3">
+                  <div className="flex size-12 shrink-0 items-center justify-center rounded-md bg-zinc-800 p-1.5">
+                    {/* Also probes the logo's natural size, which the
+                        preview needs to place it the way the burn-in will. */}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={draft.logo.url}
+                      alt=""
+                      className="max-h-full max-w-full object-contain"
+                      onLoad={(e) =>
+                        setLogoSize({
+                          width: e.currentTarget.naturalWidth,
+                          height: e.currentTarget.naturalHeight,
+                        })
+                      }
+                    />
+                  </div>
+                  <a
+                    href={draft.logo.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="min-w-0 flex-1 truncate text-sm underline-offset-2 hover:underline"
+                  >
+                    {draft.logo.filename}
+                  </a>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Remove logo"
+                    onClick={removeLogo}
+                    disabled={logoBusy}
+                  >
+                    <Trash2 />
+                  </Button>
+                </div>
+              ) : (
+                <p className="rounded-lg border border-dashed border-border p-3 text-sm text-muted-foreground">
+                  No logo — uploads go through without a watermark.
+                </p>
+              )}
+              <div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => logoInputRef.current?.click()}
+                  disabled={logoBusy}
+                >
+                  {logoBusy ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <ImagePlus />
+                  )}
+                  {draft.logo ? "Replace" : "Upload logo"}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Placement</CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-5">
+              <label className="flex items-center gap-2.5 text-sm">
+                <input
+                  type="checkbox"
+                  checked={draft.enabled}
+                  onChange={(e) => edit({ enabled: e.target.checked })}
+                  className="accent-foreground"
+                />
+                Watermark new uploads by default
+              </label>
+
+              <div className="grid gap-2">
+                <Label id="watermark-position-label">Position</Label>
+                <div className="flex items-center gap-4">
+                  <div
+                    role="radiogroup"
+                    aria-labelledby="watermark-position-label"
+                    className="grid aspect-video w-28 shrink-0 grid-cols-3 grid-rows-3 gap-1 rounded-md bg-muted p-1 ring-1 ring-foreground/10"
+                  >
+                    {WATERMARK_POSITIONS.map((position) => {
+                      const active = draft.position === position;
+                      return (
+                        <button
+                          key={position}
+                          type="button"
+                          role="radio"
+                          aria-checked={active}
+                          aria-label={WATERMARK_POSITION_LABELS[position]}
+                          title={WATERMARK_POSITION_LABELS[position]}
+                          onClick={() => edit({ position })}
+                          className={cn(
+                            "rounded-sm transition-colors",
+                            POSITION_CELLS[position],
+                            active
+                              ? "bg-foreground"
+                              : "bg-foreground/15 hover:bg-foreground/40",
+                          )}
+                        />
+                      );
+                    })}
+                  </div>
+                  <span className="text-sm text-muted-foreground">
+                    {WATERMARK_POSITION_LABELS[draft.position]}
+                  </span>
+                </div>
+              </div>
+
+              <Slider
+                id="watermark-scale"
+                label="Size"
+                display={`${draft.scale}% of width`}
+                value={draft.scale}
+                min={WATERMARK_LIMITS.scale.min}
+                max={WATERMARK_LIMITS.scale.max}
+                step={1}
+                onChange={(scale) => edit({ scale })}
+              />
+              <Slider
+                id="watermark-opacity"
+                label="Opacity"
+                display={`${Math.round(draft.opacity * 100)}%`}
+                value={draft.opacity}
+                min={WATERMARK_LIMITS.opacity.min}
+                max={WATERMARK_LIMITS.opacity.max}
+                step={0.05}
+                onChange={(opacity) => edit({ opacity })}
+              />
+              <Slider
+                id="watermark-margin"
+                label="Margin"
+                display={`${draft.margin}%`}
+                value={draft.margin}
+                min={WATERMARK_LIMITS.margin.min}
+                max={WATERMARK_LIMITS.margin.max}
+                step={0.5}
+                onChange={(margin) => edit({ margin })}
+              />
+            </CardContent>
+          </Card>
         </div>
 
-        <div className="grid gap-2">
-          <Label>Position</Label>
-          <div className="flex flex-wrap gap-2">
-            {WATERMARK_POSITIONS.map((position) => (
-              <Button
-                key={position}
-                type="button"
-                size="sm"
-                variant={draft.position === position ? "default" : "outline"}
-                onClick={() => edit({ position })}
-              >
-                {WATERMARK_POSITION_LABELS[position]}
-              </Button>
-            ))}
-          </div>
-        </div>
-
-        <div className="grid gap-4 sm:grid-cols-3">
-          <div className="grid gap-2">
-            <Label htmlFor="watermark-scale">Size — {draft.scale}% of width</Label>
-            <input
-              id="watermark-scale"
-              type="range"
-              min={WATERMARK_LIMITS.scale.min}
-              max={WATERMARK_LIMITS.scale.max}
-              step={1}
-              value={draft.scale}
-              onChange={(e) => edit({ scale: Number(e.target.value) })}
-              className="accent-foreground"
-            />
-          </div>
-          <div className="grid gap-2">
-            <Label htmlFor="watermark-opacity">
-              Opacity — {Math.round(draft.opacity * 100)}%
-            </Label>
-            <input
-              id="watermark-opacity"
-              type="range"
-              min={WATERMARK_LIMITS.opacity.min}
-              max={WATERMARK_LIMITS.opacity.max}
-              step={0.05}
-              value={draft.opacity}
-              onChange={(e) => edit({ opacity: Number(e.target.value) })}
-              className="accent-foreground"
-            />
-          </div>
-          <div className="grid gap-2">
-            <Label htmlFor="watermark-margin">Margin — {draft.margin}%</Label>
-            <input
-              id="watermark-margin"
-              type="range"
-              min={WATERMARK_LIMITS.margin.min}
-              max={WATERMARK_LIMITS.margin.max}
-              step={0.5}
-              value={draft.margin}
-              onChange={(e) => edit({ margin: Number(e.target.value) })}
-              className="accent-foreground"
-            />
-          </div>
-        </div>
-
-        {draft.logo && <Preview settings={draft} logoSize={logoSize} />}
-
-        {error && <p className="text-xs text-destructive">{error}</p>}
-
-        <div className="flex items-center gap-3">
-          <Button onClick={save} disabled={saving}>
-            {saving ? "Saving..." : "Save changes"}
-          </Button>
-          {saved && <span className="text-xs text-muted-foreground">Saved.</span>}
-        </div>
-      </CardContent>
-    </Card>
+        <Card className="lg:sticky lg:top-10">
+          <CardHeader>
+            <CardTitle>Preview</CardTitle>
+            <CardDescription>
+              Reflects unsaved changes, on both frame orientations.
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            {draft.logo ? (
+              <Preview settings={draft} logoSize={logoSize} />
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                Upload a logo to see a preview.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    </>
   );
 }
