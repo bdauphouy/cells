@@ -32,8 +32,14 @@ export default function AdminShell<Id extends string>({
   children,
 }: ShellProps<Id>) {
   return (
-    <div className="dark min-h-dvh bg-background text-foreground md:grid md:grid-cols-[15rem_minmax(0,1fr)]">
-      <aside className="sticky top-0 z-20 flex flex-col border-b border-border bg-sidebar/95 backdrop-blur md:h-dvh md:border-r md:border-b-0">
+    <div
+      data-admin
+      className="dark min-h-dvh bg-background text-foreground"
+    >
+      {/* Pinned to the viewport from `md` rather than sticky inside the
+          flow, so it never moves with the page — only <main> scrolls. On
+          mobile it collapses into a bar that sticks to the top instead. */}
+      <aside className="sticky top-0 z-20 flex flex-col border-b border-border bg-sidebar/95 backdrop-blur md:fixed md:inset-y-0 md:left-0 md:w-60 md:overflow-y-auto md:overscroll-contain md:border-r md:border-b-0">
         <div className="flex items-center justify-between gap-3 px-4 py-3 md:px-5 md:py-6">
           <Link href="/admin" className="flex items-center gap-3">
             <Image
@@ -121,7 +127,7 @@ export default function AdminShell<Id extends string>({
         </div>
       </aside>
 
-      <main className="min-w-0 px-4 py-6 sm:px-8 md:py-10">
+      <main className="min-w-0 px-4 py-6 sm:px-8 md:ml-60 md:py-10">
         <div className="mx-auto w-full max-w-5xl">{children}</div>
       </main>
     </div>

@@ -382,6 +382,15 @@ body:has([data-hero]) {
   overflow: hidden;
   overscroll-behavior: none;
 }
+/* The admin dashboard scrolls, unlike the hero, but it shouldn't
+ * rubber-band either: a bounce past either end drags the page out from under
+ * its pinned sidebar. `overscroll-behavior` declines the bounce (and scroll
+ * chaining) without touching normal scrolling; set on <html> as well as <body>
+ * for the same Safari reason as the hero rule above. */
+html:has([data-admin]),
+body:has([data-admin]) {
+  overscroll-behavior: none;
+}
 /* ---break---
  */
 @layer base {
