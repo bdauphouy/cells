@@ -11,6 +11,7 @@ import {
 import { useRouter } from "next/navigation";
 import * as tus from "tus-js-client";
 import {
+  ChartColumn,
   CircleAlert,
   Film,
   LayoutGrid,
@@ -21,6 +22,7 @@ import {
   Upload,
   UserRound,
 } from "lucide-react";
+import AnalyticsCard from "@/components/admin/AnalyticsCard";
 import AdminShell, {
   SectionHeader,
   StatCard,
@@ -76,7 +78,7 @@ const POLL_MS = 2000;
 const noopSubscribe = () => () => {};
 const PAGE_SIZE = 8;
 
-const SECTION_IDS = ["library", "hero", "watermark"] as const;
+const SECTION_IDS = ["library", "analytics", "hero", "watermark"] as const;
 type SectionId = (typeof SECTION_IDS)[number];
 const subscribeHash = (onChange: () => void) => {
   window.addEventListener("hashchange", onChange);
@@ -487,6 +489,7 @@ export default function AdminPage() {
   const activeJobs = jobs.filter((j) => j.state !== "error").length;
   const nav: AdminNavItem<SectionId>[] = [
     { id: "library", label: "Library", icon: Film, badge: activeJobs },
+    { id: "analytics", label: "Analytics", icon: ChartColumn },
     { id: "hero", label: "Hero", icon: UserRound },
     { id: "watermark", label: "Watermark", icon: Stamp },
   ];
@@ -958,6 +961,10 @@ export default function AdminPage() {
             )}
           </Card>
         </div>
+      </section>
+
+      <section hidden={section !== "analytics"}>
+        <AnalyticsCard active={section === "analytics"} />
       </section>
 
       <section hidden={section !== "hero"}>

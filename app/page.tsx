@@ -1,5 +1,6 @@
 import CarouselExperience from "@/components/CarouselExperience";
 import HeroOverlay from "@/components/HeroOverlay";
+import VisitTracker from "@/components/VisitTracker";
 import { socialHref } from "@/lib/hero-catalog";
 import { getHeroSettings, type HeroSettings } from "@/lib/hero-settings";
 import { resolveCards } from "@/lib/library";
@@ -79,6 +80,7 @@ export default async function Home() {
       </h1>
       <HeroOverlay settings={heroSettings} />
       <CarouselExperience cards={cards} />
+      <VisitTracker />
     </main>
   );
 }
