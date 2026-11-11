@@ -17,7 +17,7 @@ export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
   // Pages under /admin set their own title; everything else gets the brand
   // name appended.
-  title: { default: SITE_TITLE, template: `%s — ${SITE_NAME}` },
+  title: { default: SITE_TITLE, template: `%s - ${SITE_NAME}` },
   description: SITE_DESCRIPTION,
   applicationName: SITE_NAME,
   authors: [{ name: "Celeste Cuestas" }],

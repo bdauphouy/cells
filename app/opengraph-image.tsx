@@ -5,7 +5,7 @@ import { SITE_NAME } from "@/lib/site";
 
 // Replaces the old static opengraph-image.png: same 1200×630 black card, but
 // just the wordmark centred — no tagline line underneath.
-export const alt = `${SITE_NAME} — Celeste Cuestas, video editor`;
+export const alt = `${SITE_NAME} - Celeste Cuestas, video editor`;
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
 

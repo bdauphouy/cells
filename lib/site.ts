@@ -10,7 +10,7 @@ export const SITE_URL =
     : "http://localhost:3000");
 
 export const SITE_NAME = "Cells Edition";
-export const SITE_TITLE = "Cells Edition — Celeste Cuestas, Video Editor";
+export const SITE_TITLE = "Cells Edition - Video Editor for Reels & Social Content";
 // Kept under ~160 characters so Google, X and Facebook show it without
 // truncating — the full tool list lives in `keywords` instead.
 export const SITE_DESCRIPTION =
