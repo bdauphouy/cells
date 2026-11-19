@@ -1,5 +1,5 @@
-// Shared between the server (card resolution) and the client (the carousel
-// mesh count) so the two can never drift apart. The spiral loops the
-// library round to reach this many cards; beyond it, cards just keep
-// growing one-per-video instead of ever being capped.
-export const MIN_CARDS = 18;
+// How many cards ride the spiral on desktop. The cards are only slots: each
+// one shows whichever library clip comes next as it wraps round, so every
+// video is shown whatever this is, and a clip never repeats before the whole
+// library has gone by. Phones use a smaller count; see SpiralCarousel.
+export const SPIRAL_CARDS = 18;

@@ -14,7 +14,7 @@ import {
   ChartColumn,
   CircleAlert,
   Film,
-  LayoutGrid,
+  RectangleHorizontal,
   Loader2,
   Pencil,
   Stamp,
@@ -30,7 +30,6 @@ import AdminShell, {
 } from "@/components/admin/AdminShell";
 import HeroSettingsCard from "@/components/admin/HeroSettingsCard";
 import WatermarkSettingsCard from "@/components/admin/WatermarkSettingsCard";
-import { MIN_CARDS } from "@/lib/constants";
 import type { LibraryVideo } from "@/lib/library";
 import { canBurnWatermark, type WatermarkSettings } from "@/lib/watermark";
 import { Button } from "@/components/ui/button";
@@ -85,6 +84,13 @@ const subscribeHash = (onChange: () => void) => {
   return () => window.removeEventListener("hashchange", onChange);
 };
 const readHash = () => window.location.hash.slice(1);
+
+// Same rule as the spiral's (see cardSize in SpiralCarousel): anything that
+// isn't taller than it is wide gets a landscape card.
+const isLandscape = (video: Pick<LibraryVideo, "aspectRatio">) => {
+  const [w, h] = video.aspectRatio.split(":").map(Number);
+  return w > 0 && h > 0 && w >= h;
+};
 
 const dateFormat = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -494,8 +500,7 @@ export default function AdminPage() {
     { id: "watermark", label: "Watermark", icon: Stamp },
   ];
 
-  const siteCards =
-    library.length === 0 ? 0 : Math.max(MIN_CARDS, library.length);
+  const landscapeCount = library.filter(isLandscape).length;
   const watermarkStatus = !watermark
     ? "—"
     : !watermark.logo
@@ -511,7 +516,7 @@ export default function AdminPage() {
       <section hidden={section !== "library"}>
         <SectionHeader
           title="Library"
-          description={`Cards on the site fill from this library automatically — looped to reach ${MIN_CARDS} cards, or one card per video once you have more than that.`}
+          description="The site's spiral plays this whole library in upload order and loops round it, so no video repeats until every other one has been shown. Vertical and horizontal videos can be mixed freely."
         />
 
         <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -527,9 +532,10 @@ export default function AdminPage() {
             hint={activeJobs ? "Keep this tab open" : "Nothing uploading"}
           />
           <StatCard
-            label="Cards on site"
-            icon={LayoutGrid}
-            value={loaded ? siteCards : <Skeleton className="h-8 w-10" />}
+            label="Horizontal"
+            icon={RectangleHorizontal}
+            value={loaded ? landscapeCount : <Skeleton className="h-8 w-10" />}
+            hint={loaded ? `${library.length - landscapeCount} vertical` : undefined}
           />
           <StatCard
             label="Watermark"
@@ -829,16 +835,22 @@ export default function AdminPage() {
                       key={video.id}
                       className="group flex items-center gap-3 px-4 py-3 transition-colors hover:bg-muted/40"
                     >
-                      {video.posterUrl ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={video.posterUrl}
-                          alt=""
-                          className="h-14 w-9 shrink-0 rounded-md object-cover ring-1 ring-foreground/10"
-                        />
-                      ) : (
-                        <div className="h-14 w-9 shrink-0 rounded-md bg-muted ring-1 ring-foreground/10" />
-                      )}
+                      {/* A fixed square slot, so rows line up whichever way
+                          round the thumbnail is. */}
+                      <div className="flex size-14 shrink-0 items-center justify-center">
+                        {video.posterUrl ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={video.posterUrl}
+                            alt=""
+                            className={`${isLandscape(video) ? "h-9 w-14" : "h-14 w-9"} rounded-md object-cover ring-1 ring-foreground/10`}
+                          />
+                        ) : (
+                          <div
+                            className={`${isLandscape(video) ? "h-9 w-14" : "h-14 w-9"} rounded-md bg-muted ring-1 ring-foreground/10`}
+                          />
+                        )}
+                      </div>
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium">
                           {video.title}

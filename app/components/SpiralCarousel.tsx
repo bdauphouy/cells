@@ -9,6 +9,7 @@ import * as THREE from "three";
 // Type-only, so nothing from the library module (Redis, Livepeer) reaches the
 // client bundle — the import is erased at compile time.
 import type { ResolvedCard } from "@/lib/library";
+import { SPIRAL_CARDS } from "@/lib/constants";
 
 /* ── Video source ──────────────────────────────────────────────────────────
  * Served from Livepeer as adaptive HLS. Safari plays an .m3u8 natively
@@ -160,7 +161,25 @@ function parseAspect(aspectRatio: string): [number, number] {
  */
 const CARD_H = 1.5;
 const CARD_W = (CARD_H * 9) / 16; // Reels are 9:16
-/* Radians of orbit per card — the horizontal lever. The climb is well under
+
+/* A card takes the shape of its clip. Anything taller than it is wide is a
+ * reel and gets the 9:16 card, cover-fitted as before. Anything else is laid on
+ * its side at the same area — a 16:9 clip gets exactly the reel's two sides
+ * swapped, 1.5 x 0.84 — so a landscape card weighs the same on the strip as a
+ * portrait one instead of towering over it. The width is capped at CARD_H so an
+ * ultra-wide clip comes out shorter rather than wider: width is what the helix
+ * has to find angular room for (see cardGap), height costs nothing.
+ */
+const CARD_AREA = CARD_W * CARD_H;
+const cardSize = (aspectW: number, aspectH: number): [number, number] => {
+  const aspect = aspectW / aspectH;
+  if (aspect < 1) return [CARD_W, CARD_H];
+  const width = Math.min(Math.sqrt(CARD_AREA * aspect), CARD_H);
+  return [width, width / aspect];
+};
+
+/* Radians of orbit between two portrait cards — the horizontal lever. Wider
+ * cards are spaced further apart; see cardGap. The climb is well under
  * CARD_H, so consecutive cards already overlap vertically and the side-to-side
  * space you see between them is roughly radius * angleGap less CARD_W, at the
  * front of the orbit where the cards face the camera.
@@ -217,6 +236,12 @@ const MOBILE_WIDTH = 768;
  * runs off both ends of a phone screen.
  */
 const CARD_COUNT_MOBILE = 14;
+/* Desktop's mesh count, and the fixed half of what used to be "18 or one per
+ * video, whichever is more". The meshes no longer belong to particular videos
+ * (see `assignMedia`) — every clip in the library comes round whatever the
+ * count — so growing the strip with the library bought nothing but draw calls.
+ */
+const CARD_COUNT = SPIRAL_CARDS;
 
 /* No two cards may ever intersect. A curled card reaches its neighbour's plane
  * at (radius + CURL)*cos(a) + (CARD_W/2)*sin(a) - radius, which only stays
@@ -235,6 +260,18 @@ const CARD_COUNT_MOBILE = 14;
  * are far enough apart to survive it — so retune none of them on its own, and
  * re-run the check rather than assuming these figures still hold. The speed
  * distortions in the shader are bounded so they preserve this margin.
+ *
+ * Those figures are for two portrait cards. A landscape card is nearly twice
+ * as wide and would cut straight through its neighbours at the same spacing, so
+ * each card adds the extra angle its own half-width needs to clear a tangent
+ * neighbour over what a portrait half-width needs — atan(half / radius), the
+ * angle a half-width subtends at the axis, taken at full rush-widening (see
+ * RUSH_WIDEN). Two portraits keep exactly ANGLE_GAP, so a reels-only library
+ * lays out exactly as it did. Checked numerically (top-down sections of the
+ * curled cards, every pair that overlaps vertically, at rest and at full rush)
+ * for all-landscape, alternating and random mixes of 9:16, 1:1, 4:3, 16:9 and
+ * 21:9 at both radii: no crossings, where dropping the extra angle crosses on
+ * nearly every mix.
  */
 
 /* The card whose plane squarely faces the camera is the one a quarter turn
@@ -293,6 +330,17 @@ const CURL = 0.1;
 const LENS = 0.07; // parabolic bow: the spiral leans as it runs off-screen
 const WHIP = 1.1; // lateral smear proportional to scroll speed
 const SQUASH = 0.4; // vertical pinch under speed, capped in the shader
+// How much wider than at rest a card gets at the shader's rush cap (0.6), where
+// the vertex stage stretches x by 1 + rush * uSquash * 0.6. Spacing is sized
+// against this, not the resting width.
+const RUSH_WIDEN = 1 + 0.6 * SQUASH * 0.6;
+
+/* Orbit between a card of width `a` and its neighbour of width `b`; see the
+ * no-crossing note above. */
+const cardGap = (a: number, b: number, angleGap: number, radius: number) => {
+  const reach = (w: number) => Math.atan(((w / 2) * RUSH_WIDEN) / radius);
+  return angleGap + reach(a) + reach(b) - 2 * reach(CARD_W);
+};
 
 /* ── Cloud bank ────────────────────────────────────────────────────────────
  * Both ends of the spiral run into haze. A leaving card goes soft, milky and
@@ -524,14 +572,10 @@ const HIDE_EASING = 0.25; // per-frame pull toward the crossfade target
 const CLICK_MOVE_THRESHOLD = 6; // px of drag before a tap stops counting as a click
 const CLICK_TIME_THRESHOLD = 350; // ms
 
-type Card = {
-  mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
-  index: number;
-  delay: number;
-  reveal: number;
-  form: number;
-  hover: number;
-  hiding: number;
+/* One per video in the library, built once. Everything here belongs to the
+ * clip rather than to whichever mesh is showing it at the moment, so a mesh
+ * that wraps round the helix just points at a different one of these. */
+type Media = {
   hlsUrl: string;
   title: string;
   description?: string;
@@ -540,6 +584,32 @@ type Card = {
   posterUrl?: string;
   aspectW: number;
   aspectH: number;
+  // The card's world size; see cardSize.
+  width: number;
+  height: number;
+  geometry: THREE.PlaneGeometry;
+  planeSize: THREE.Vector2;
+  imageSize: THREE.Vector2;
+  /* FOG_SWELL is sized so a portrait card's plane is wide enough to hold the
+   * cloud. The cloud is the same size whatever card it condenses into, so what
+   * has to reach that width is the card's *narrow* side — this scales the swell
+   * up for a card whose narrow side is shorter than a reel's, and leaves a
+   * reel's at exactly FOG_SWELL. */
+  swellScale: number;
+};
+
+type Card = {
+  mesh: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
+  index: number;
+  // Which position along the endless strip this mesh is standing in for right
+  // now; the clip it shows is media[seq mod N]. See assignMedia.
+  seq: number;
+  media: Media;
+  delay: number;
+  reveal: number;
+  form: number;
+  hover: number;
+  hiding: number;
   liveVideo?: HTMLVideoElement;
   liveHls?: Hls | null;
   liveTexture?: THREE.VideoTexture;
@@ -671,13 +741,19 @@ export default function SpiralCarousel({
     // would otherwise fill this in.
     camera.updateMatrixWorld();
 
-    const geometry = new THREE.PlaneGeometry(
-      CARD_W,
-      CARD_H,
-      SEGMENTS,
-      SEGMENTS,
-    );
-    const planeSizes = new THREE.Vector2(CARD_W, CARD_H);
+    // One plane per card shape rather than per card: swapping a mesh's
+    // geometry when it changes clip is free, and a library is only ever a
+    // couple of shapes.
+    const geometries = new Map<string, THREE.PlaneGeometry>();
+    const geometryFor = (width: number, height: number) => {
+      const key = `${width.toFixed(4)}x${height.toFixed(4)}`;
+      let geometry = geometries.get(key);
+      if (!geometry) {
+        geometry = new THREE.PlaneGeometry(width, height, SEGMENTS, SEGMENTS);
+        geometries.set(key, geometry);
+      }
+      return geometry;
+    };
 
     const textureLoader = new THREE.TextureLoader();
 
@@ -700,32 +776,16 @@ export default function SpiralCarousel({
       return texture;
     };
 
-    // The library drives the card count directly on desktop. Mobile caps it
-    // at CARD_COUNT_MOBILE — every card in the loop gets its own <video>
-    // element regardless of whether it ever wins a decoder, just from sitting
-    // in the DOM waiting its turn.
-    const cardCount = lowPower
-      ? Math.min(videos.length, CARD_COUNT_MOBILE)
-      : videos.length;
-
-    // Layout that follows the viewport rather than the device, filled in by
-    // the first resize() below and kept current from then on.
-    let verticalGap = VERTICAL_GAP;
-    let angleGap = ANGLE_GAP;
-    let ramp = depthRamp(cardCount, verticalGap);
-    let maxLive = MAX_LIVE;
-    let cardMaxHeight = CARD_MAX_HEIGHT;
-    let cardMaxBitrate = CARD_MAX_BITRATE;
-    let radius = RADIUS;
-    let dragSens = DRAG_SENS;
-    let maxSpeed = MAX_SPEED;
-    let viewportActivate = VIEWPORT_ACTIVATE;
-    let viewportDeactivate = VIEWPORT_DEACTIVATE;
-
-    const cards: Card[] = [];
-    for (let i = 0; i < cardCount; i++) {
-      const video = videos[i];
+    /* The library, once each, in order. The strip is endless and shows these
+     * round and round — media[seq mod N] at every position along it — so a
+     * clip only comes back once every other clip has had its turn. That was
+     * not true while the server padded the list out to 18 and the phone then
+     * cut it at 14: ten clips came out as A..J A..D, and the wrap went
+     * straight from that D back to A — the same clip four cards apart. */
+    const mediaCount = videos.length;
+    const media: Media[] = videos.map((video) => {
       const [aspectW, aspectH] = parseAspect(video.aspectRatio);
+      const [width, height] = cardSize(aspectW, aspectH);
       const posterTexture = video.posterUrl
         ? textureLoader.load(video.posterUrl)
         : makeFallbackTexture();
@@ -769,6 +829,76 @@ export default function SpiralCarousel({
       posterTexture.magFilter = THREE.LinearFilter;
       posterTexture.generateMipmaps = false;
 
+      return {
+        hlsUrl: video.hlsUrl,
+        title: video.title,
+        description: video.description,
+        posterTexture,
+        posterUrl: video.posterUrl,
+        aspectW,
+        aspectH,
+        width,
+        height,
+        geometry: geometryFor(width, height),
+        planeSize: new THREE.Vector2(width, height),
+        imageSize: new THREE.Vector2(aspectW, aspectH),
+        swellScale: CARD_W / Math.min(width, height),
+      };
+    });
+    const mediaAt = (seq: number) =>
+      media[((seq % mediaCount) + mediaCount) % mediaCount];
+
+    /* How many meshes ride the helix. Not the library size any more: a mesh
+     * changes clip each time it wraps, so the count is purely a layout figure.
+     * An empty library draws nothing. */
+    const cardCount =
+      mediaCount === 0 ? 0 : lowPower ? CARD_COUNT_MOBILE : CARD_COUNT;
+
+    // Layout that follows the viewport rather than the device, filled in by
+    // the first resize() below and kept current from then on.
+    let verticalGap = VERTICAL_GAP;
+    let angleGap = ANGLE_GAP;
+    let ramp = depthRamp(cardCount, verticalGap);
+    let maxLive = MAX_LIVE;
+    let cardMaxHeight = CARD_MAX_HEIGHT;
+    let cardMaxBitrate = CARD_MAX_BITRATE;
+    let radius = RADIUS;
+    let dragSens = DRAG_SENS;
+    let maxSpeed = MAX_SPEED;
+    let viewportActivate = VIEWPORT_ACTIVATE;
+    let viewportDeactivate = VIEWPORT_DEACTIVATE;
+
+    /* Where each position along the strip sits round the orbit. With mixed
+     * shapes the spacing is no longer one constant (see cardGap), so the angle
+     * of position x is the running total of the gaps before it: `turns[i]` is
+     * that total for the i-th clip of a lap, `period` the whole lap, and
+     * fractional positions interpolate linearly between their two neighbours.
+     * Filled in by resize(), since the gaps depend on the radius.
+     */
+    let gaps: number[] = [];
+    let turns: number[] = [];
+    let period = 0;
+    const layoutOrbit = () => {
+      gaps = media.map((m, i) =>
+        cardGap(m.width, media[(i + 1) % mediaCount].width, angleGap, radius),
+      );
+      turns = [0];
+      for (const gap of gaps) turns.push(turns[turns.length - 1] + gap);
+      period = turns[mediaCount] ?? 0;
+    };
+    const turnAt = (x: number) => {
+      const lap = Math.floor(x / mediaCount);
+      const r = x - lap * mediaCount;
+      const i = Math.min(Math.floor(r), mediaCount - 1);
+      return lap * period + turns[i] + (r - i) * gaps[i];
+    };
+    // resize() fills this in properly, but bails on a zero-sized host — and
+    // the loop must never read an empty table.
+    layoutOrbit();
+
+    const cards: Card[] = [];
+    for (let i = 0; i < cardCount; i++) {
+      const cardMedia = mediaAt(i);
       const material = new THREE.ShaderMaterial({
         vertexShader,
         fragmentShader,
@@ -779,9 +909,13 @@ export default function SpiralCarousel({
         // are cut down under this. See card.frag.glsl.
         defines: lowPower ? { LOW_QUALITY: "" } : {},
         uniforms: {
-          uTexture: { value: posterTexture },
-          uPlaneSizes: { value: planeSizes },
-          uImageSizes: { value: new THREE.Vector2(aspectW, aspectH) },
+          uTexture: { value: cardMedia.posterTexture },
+          uPlaneSizes: { value: cardMedia.planeSize },
+          uImageSizes: { value: cardMedia.imageSize },
+          // Every card's shape is measured in reel heights, so the cloud and
+          // the corner radius are the same size on a landscape card as on a
+          // portrait one. See card.frag.glsl.
+          uUnit: { value: CARD_H },
           uCurl: { value: CURL },
           uSquash: { value: SQUASH },
           uLens: { value: LENS },
@@ -792,7 +926,7 @@ export default function SpiralCarousel({
           uOpacity: { value: 1 },
           uHighlight: { value: 0 },
           uFog: { value: 0 },
-          uSwell: { value: 1 + FOG_SWELL },
+          uSwell: { value: 1 + FOG_SWELL * cardMedia.swellScale },
           uFogDir: { value: 1 },
           uFogColor: { value: fogColor },
           uTime: { value: 0 },
@@ -806,23 +940,18 @@ export default function SpiralCarousel({
           uSeed: { value: (i * 0.6180339887) % 1 },
         },
       });
-      const mesh = new THREE.Mesh(geometry, material);
+      const mesh = new THREE.Mesh(cardMedia.geometry, material);
       scene.add(mesh);
       cards.push({
         mesh,
         index: i,
+        seq: i,
+        media: cardMedia,
         delay: (i % 4) * REVEAL_STAGGER,
         reveal: 0,
         form: 0,
         hover: 0,
         hiding: 0,
-        hlsUrl: video.hlsUrl,
-        title: video.title,
-        description: video.description,
-        posterTexture,
-        posterUrl: video.posterUrl,
-        aspectW,
-        aspectH,
         priority: Infinity,
         wantsLive: false,
       });
@@ -839,7 +968,7 @@ export default function SpiralCarousel({
       el.style.cssText =
         "position:absolute;width:1px;height:1px;opacity:0;pointer-events:none";
       host.appendChild(el);
-      const hls = attachHls(el, card.hlsUrl, {
+      const hls = attachHls(el, card.media.hlsUrl, {
         maxBitrate: cardMaxBitrate,
         maxHeight: cardMaxHeight,
         card: true,
@@ -860,8 +989,11 @@ export default function SpiralCarousel({
       card.liveTexture = texture;
       // Swap once there's an actual frame to show, so activating a card
       // doesn't flash black before the first frame decodes.
+      // Guarded, since by the time the first frame lands the card may have
+      // wrapped onto another clip and dropped this stream.
       const swap = () => {
-        card.mesh.material.uniforms.uTexture.value = texture;
+        if (card.liveTexture === texture)
+          card.mesh.material.uniforms.uTexture.value = texture;
       };
       if (el.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) swap();
       else el.addEventListener("loadeddata", swap, { once: true });
@@ -886,11 +1018,28 @@ export default function SpiralCarousel({
       card.liveVideo.removeAttribute("src");
       card.liveVideo.remove();
       card.liveTexture?.dispose();
-      card.mesh.material.uniforms.uTexture.value = card.posterTexture;
+      card.mesh.material.uniforms.uTexture.value = card.media.posterTexture;
       card.liveVideo = undefined;
       card.liveHls = undefined;
       card.liveTexture = undefined;
       card.idleSince = undefined;
+    };
+
+    /* Hands a mesh the clip for a new position along the strip. Only ever
+     * happens at the wrap, which sits past the opacity cut at both ends of the
+     * helix (see depthRamp), so the change is never on screen. The live stream
+     * belonged to the old clip and goes with it. */
+    const assignMedia = (card: Card, seq: number) => {
+      card.seq = seq;
+      const next = mediaAt(seq);
+      if (next === card.media) return;
+      deactivateCard(card);
+      card.media = next;
+      card.mesh.geometry = next.geometry;
+      const u = card.mesh.material.uniforms;
+      u.uTexture.value = next.posterTexture;
+      u.uPlaneSizes.value = next.planeSize;
+      u.uImageSizes.value = next.imageSize;
     };
 
     /* ── Fullscreen lightbox ──────────────────────────────────────────────── */
@@ -986,9 +1135,10 @@ export default function SpiralCarousel({
      */
     let canvasRect = new DOMRect(0, 0, 1, 1);
 
-    const cardScreenRect = (mesh: THREE.Mesh) => {
-      const hw = CARD_W / 2;
-      const hh = CARD_H / 2;
+    const cardScreenRect = (card: Card) => {
+      const { mesh } = card;
+      const hw = card.media.width / 2;
+      const hh = card.media.height / 2;
       let minX = Infinity,
         minY = Infinity,
         maxX = -Infinity,
@@ -1015,7 +1165,9 @@ export default function SpiralCarousel({
     const fullscreenRect = () => {
       const vw = window.innerWidth;
       const vh = window.innerHeight;
-      const aspect = openCard ? openCard.aspectW / openCard.aspectH : 16 / 9;
+      const aspect = openCard
+        ? openCard.media.aspectW / openCard.media.aspectH
+        : 16 / 9;
       let width = vh * aspect;
       let height = vh;
       if (width > vw) {
@@ -1072,7 +1224,7 @@ export default function SpiralCarousel({
 
       fsVideo.style.transition = "none";
       layoutFullscreen(); // reads openCard's aspect, so it goes after the assign
-      placeOver(cardScreenRect(card.mesh));
+      placeOver(cardScreenRect(card));
       fsVideo.style.opacity = "0";
       backdrop.style.display = "block";
       fsVideo.style.display = "block";
@@ -1081,9 +1233,10 @@ export default function SpiralCarousel({
       backdrop.style.pointerEvents = "auto";
       fsVideo.style.pointerEvents = "auto";
 
-      infoTitle.textContent = card.title;
-      infoDescription.textContent = card.description ?? "";
-      infoDescription.style.display = card.description ? "block" : "none";
+      const { media: clip } = card;
+      infoTitle.textContent = clip.title;
+      infoDescription.textContent = clip.description ?? "";
+      infoDescription.style.display = clip.description ? "block" : "none";
       infoPanel.style.display = "block";
 
       /* Nothing on the spiral is visible from here — the backdrop is on its
@@ -1108,12 +1261,12 @@ export default function SpiralCarousel({
        * this is never seen; on a touch device there is no warm stream by design,
        * so without it the tap grows a black rectangle out of a picture. With it,
        * the poster expands and the video takes over underneath it. */
-      if (card.posterUrl) fsVideo.poster = card.posterUrl;
+      if (clip.posterUrl) fsVideo.poster = clip.posterUrl;
       else fsVideo.removeAttribute("poster");
       // Fullscreen: the top rung is the whole point, so both limits are set
       // past anything a ladder is likely to hold. Picking up where the card
       // left off is a config value, not a seek — see HlsOptions.startPosition.
-      fsHls = attachHls(fsVideo, card.hlsUrl, {
+      fsHls = attachHls(fsVideo, clip.hlsUrl, {
         maxBitrate: Infinity,
         maxHeight: Infinity,
         startPosition: card.liveVideo?.currentTime ?? -1,
@@ -1170,7 +1323,7 @@ export default function SpiralCarousel({
       // before the motion stops, so nothing pops at the moment it settles.
       const fadeDelay = CLOSE_MS - SWAP_MS - CLOSE_FADE_LEAD_MS;
       fsVideo.style.transition = `opacity ${SWAP_MS}ms ease ${fadeDelay}ms, transform ${CLOSE_MS}ms cubic-bezier(0.4,0,0.2,1), border-radius ${CLOSE_MS}ms ease`;
-      placeOver(cardScreenRect(card.mesh));
+      placeOver(cardScreenRect(card));
       fsVideo.style.opacity = "0";
       backdrop.style.background = "rgba(0,0,0,0)";
       backdrop.style.pointerEvents = "none";
@@ -1226,6 +1379,8 @@ export default function SpiralCarousel({
       verticalGap = mobile ? VERTICAL_GAP_MOBILE : VERTICAL_GAP;
       angleGap = mobile ? ANGLE_GAP_MOBILE : ANGLE_GAP;
       ramp = depthRamp(cardCount, verticalGap);
+      radius = mobile ? RADIUS_MOBILE : RADIUS;
+      layoutOrbit();
       maxLive = touchOnly
         ? MAX_LIVE_TOUCH
         : mobile
@@ -1233,7 +1388,6 @@ export default function SpiralCarousel({
           : MAX_LIVE;
       cardMaxHeight = mobile ? CARD_MAX_HEIGHT_MOBILE : CARD_MAX_HEIGHT;
       cardMaxBitrate = mobile ? CARD_MAX_BITRATE_MOBILE : CARD_MAX_BITRATE;
-      radius = mobile ? RADIUS_MOBILE : RADIUS;
       dragSens = mobile ? DRAG_SENS_MOBILE : DRAG_SENS;
       maxSpeed = mobile ? MAX_SPEED_MOBILE : MAX_SPEED;
       viewportActivate = mobile ? VIEWPORT_ACTIVATE_MOBILE : VIEWPORT_ACTIVATE;
@@ -1414,6 +1568,7 @@ export default function SpiralCarousel({
         canvas.style.cursor = cursor;
       }
 
+      const centreTurn = turnAt(offset + (cardCount - 1) / 2);
       for (const card of cards) {
         const { mesh } = card;
         const u = mesh.material.uniforms;
@@ -1433,12 +1588,19 @@ export default function SpiralCarousel({
           (hideTarget - card.hiding) * (1 - Math.pow(1 - HIDE_EASING, step));
 
         const hidden = 1 - card.reveal;
-        // Wrap into [0, cardCount) so a fixed set of meshes loops forever.
-        const slot =
-          (((card.index - offset) % cardCount) + cardCount) % cardCount;
+        /* Wrap into [0, cardCount) so a fixed set of meshes loops forever.
+         * Each wrap moves the mesh a whole strip's length along, which is what
+         * `seq` counts — and with it the clip the mesh is showing. */
+        const along = card.index - offset;
+        const lap = Math.floor(along / cardCount);
+        const slot = along - lap * cardCount;
+        const seq = card.index - lap * cardCount;
+        if (seq !== card.seq) assignMedia(card, seq);
         const b = slot - (cardCount - 1) / 2;
 
-        const angle = b * angleGap + HELIX_PHASE;
+        // Measured from the position in the middle of the strip, so the
+        // front of the orbit stays where HELIX_PHASE puts it.
+        const angle = turnAt(seq) - centreTurn + HELIX_PHASE;
         // Cards fly in from the axis and settle down into place.
         const r = radius * (1 - hidden / 2);
         const y = b * verticalGap + hidden * 1.5;
@@ -1473,7 +1635,7 @@ export default function SpiralCarousel({
         u.uCloud.value = cloud;
         // The plane has to be big enough to hold whichever shape is current;
         // the cloud is the wide one, so it is the cloud that sizes it.
-        u.uSwell.value = 1 + cloud * FOG_SWELL;
+        u.uSwell.value = 1 + cloud * FOG_SWELL * card.media.swellScale;
         u.uFogDir.value = ndcY >= 0 ? 1 : -1;
         u.uOpacity.value =
           card.reveal *
@@ -1533,7 +1695,7 @@ export default function SpiralCarousel({
         titleLabel.style.opacity = showTitle ? "1" : "0";
         titleLabel.style.transform = `translate(-50%,${showTitle ? 0 : 6}px)`;
       }
-      if (showTitle) titleLabel.textContent = hoveredCard!.title;
+      if (showTitle) titleLabel.textContent = hoveredCard!.media.title;
 
       reconcileStreams(candidates);
       candidates.length = 0;
@@ -1665,10 +1827,10 @@ export default function SpiralCarousel({
       titleLabel.remove();
       for (const card of cards) {
         deactivateCard(card);
-        card.posterTexture.dispose();
         card.mesh.material.dispose();
       }
-      geometry.dispose();
+      for (const clip of media) clip.posterTexture.dispose();
+      for (const geometry of geometries.values()) geometry.dispose();
       renderer.dispose();
       canvas.remove();
       gridBase.remove();

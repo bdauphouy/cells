@@ -1,4 +1,3 @@
-import { MIN_CARDS } from "@/lib/constants";
 import { db } from "@/lib/kv";
 import { livepeer, resolvePlayback } from "@/lib/livepeer";
 
@@ -110,22 +109,18 @@ export type ResolvedCard = {
   description?: string;
 };
 
-// What the carousel actually needs: no manual per-card assignment — the
-// library fills the spiral on its own. Fewer than MIN_CARDS videos loop
-// round to reach it; MIN_CARDS or more get one card each, so the spiral
-// just grows past the minimum instead of ever leaving cards unused.
+// What the carousel actually needs: the library once each, in upload order.
+// No padding — the spiral loops it on its own (see SpiralCarousel's
+// assignMedia), which is the only way to guarantee a clip doesn't come back
+// until every other one has been shown. Padding it here, and then having the
+// phone cut the padded list short, is what put repeats four cards apart.
 export async function resolveCards(): Promise<ResolvedCard[]> {
   const library = await getLibrary();
-  if (library.length === 0) return [];
-  const count = Math.max(MIN_CARDS, library.length);
-  return Array.from({ length: count }, (_, i) => {
-    const video = library[i % library.length];
-    return {
-      hlsUrl: video.hlsUrl,
-      posterUrl: video.posterUrl,
-      aspectRatio: video.aspectRatio,
-      title: video.title,
-      description: video.description,
-    };
-  });
+  return library.map((video) => ({
+    hlsUrl: video.hlsUrl,
+    posterUrl: video.posterUrl,
+    aspectRatio: video.aspectRatio,
+    title: video.title,
+    description: video.description,
+  }));
 }

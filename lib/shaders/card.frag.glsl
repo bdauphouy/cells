@@ -1,6 +1,10 @@
 uniform sampler2D uTexture;
 uniform vec2 uPlaneSizes;
 uniform vec2 uImageSizes;
+/* World height of a portrait card. Every card's own space is measured in this
+ * rather than in its own height, so a landscape card — shorter, wider — gets the
+ * same corner radius and condenses out of the same size of cloud as a reel. */
+uniform float uUnit;
 uniform float uZoom;
 uniform float uReveal;
 uniform float uOpacity;
@@ -9,7 +13,7 @@ uniform float uFog; // 0 in clear air, 1 lost in the cloud bank
 uniform float uFogDir; // +1 leaving through the top, -1 through the bottom
 uniform vec3 uFogColor;
 uniform float uTime;
-/* 0 is a resolved 9:16 card; 1 is a formless puff of vapour with no card in it
+/* 0 is a resolved card; 1 is a formless puff of vapour with no card in it
  * at all. Everything between is the morph — silhouette, fill and lighting all
  * cross over on this one number. It is driven from two places (see
  * SpiralCarousel): a card is born as a cloud and condenses into its reel over
@@ -80,9 +84,9 @@ float lobe(vec2 p, vec2 c, float r) {
   return length(p - c) - r;
 }
 
-/* The cloud's silhouette, in the same aspect-corrected space as the card's
- * rounded rect below — one unit is one card height, so the card itself is
- * 0.5625 x 1.0 and centred on the origin.
+/* The cloud's silhouette, in the same space as the card's rounded rect below —
+ * one unit is one portrait card's height (uUnit), so a reel is 0.5625 x 1.0
+ * and a 16:9 card 1.0 x 0.5625, both centred on the origin.
  *
  * Deliberately the opposite shape: about 0.72 wide and 0.43 tall, so it is
  * wider than it is tall where the card is much taller than it is wide, and
@@ -123,7 +127,7 @@ float cloudSdf(vec2 p, float seed, float t) {
 }
 
 void main() {
-  // Cover-fit the video into the 9:16 card without stretching it.
+  // Cover-fit the video into the card without stretching it.
   vec2 ratio = vec2(
     min((uPlaneSizes.x / uPlaneSizes.y) / (uImageSizes.x / uImageSizes.y), 1.0),
     min((uPlaneSizes.y / uPlaneSizes.x) / (uImageSizes.y / uImageSizes.x), 1.0)
@@ -206,14 +210,14 @@ void main() {
     }
   }
 
-  // Aspect-corrected card space: one unit is one card height, origin at the
-  // middle of the card, so corners stay circular on a tall card and the cloud
-  // above is measured in the same units.
-  vec2 aspect = vec2(uPlaneSizes.x / uPlaneSizes.y, 1.0);
-  vec2 p = (cardUv - 0.5) * aspect;
+  // Card space: one unit is one portrait card height (see uUnit), origin at
+  // the middle of the card, so corners stay circular whatever the card's
+  // shape and the cloud above is measured in the same units on every card.
+  vec2 extent = uPlaneSizes / uUnit;
+  vec2 p = (cardUv - 0.5) * extent;
 
   // Rounded-rect mask. Shrinks while the card is still arriving.
-  vec2 halfSize = 0.5 * aspect * mix(0.7, 1.0, uReveal);
+  vec2 halfSize = 0.5 * extent * mix(0.7, 1.0, uReveal);
   float radius = min(mix(0.055, 0.20, form), min(halfSize.x, halfSize.y) * 0.9);
   vec2 d = abs(p) - halfSize + radius;
   float sdf = length(max(d, 0.0)) + min(max(d.x, d.y), 0.0) - radius;
