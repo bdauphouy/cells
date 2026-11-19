@@ -210,9 +210,9 @@
   position: fixed;
   /* A plain screen-edge inset, matching the HeroOverlay tiles. This used to be
    * pushed down the screen to dodge the audio toggle iOS drew in the player's
-   * own top-right corner; the player has no controls any more (see fsVideo in
-   * SpiralCarousel), so the corner is uncontested at every size and there is
-   * nothing left to dodge. The safe-area term is for standalone mode, where
+   * own top-right corner; the player has no native controls any more (see
+   * fsVideo in SpiralCarousel), so the corner is uncontested at every size and
+   * there is nothing left to dodge. The safe-area term is for standalone mode, where
    * the page owns the notch. */
   top: calc(env(safe-area-inset-top, 0px) + 20px);
   right: 20px;
@@ -272,6 +272,254 @@
   .lightbox-close svg {
     width: 15px;
     height: 15px;
+  }
+}
+
+/* ── Lightbox player chrome ─────────────────────────────────────────────────
+ * The dock over the fullscreen player: the title panel with the control bar
+ * from lightbox-controls.ts directly beneath it. On a phone the picture fills
+ * the width anyway, so it simply spans the screen's bottom edge. From `sm` up
+ * the picture is centred with bands either side of it, and a viewport-anchored
+ * bar ended up off to the left of the thing it controls — so there it sits on
+ * the bottom of the picture itself, centred and as wide as the picture (capped
+ * for wide landscape clips). The --video-* box comes from layoutFullscreen in
+ * SpiralCarousel. The dock's own
+ * opacity/transform are driven from JS for the open/close animation; the inner
+ * .lightbox-chrome carries the idle fade. Sized for a thumb below `sm` (44px
+ * targets, a fatter thumb that is always shown) and tightened for a mouse
+ * above it. */
+.lightbox-dock {
+  position: fixed;
+  left: 20px;
+  bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+  z-index: 42;
+  width: min(560px, calc(100vw - 40px));
+  pointer-events: none;
+  transition:
+    opacity 0.3s ease,
+    transform 0.3s ease;
+}
+
+@media (min-width: 640px) {
+  .lightbox-dock {
+    --dock-width: min(calc(var(--video-width, 100vw) - 32px), 960px);
+    left: calc(
+      var(--video-left, 0px) +
+        (var(--video-width, 100vw) - var(--dock-width)) / 2
+    );
+    bottom: calc(
+      max(var(--video-bottom, 0px), env(safe-area-inset-bottom, 0px)) + 16px
+    );
+    width: var(--dock-width);
+  }
+}
+
+.lightbox-chrome {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  transition: opacity 0.3s ease;
+}
+
+.lightbox-chrome.is-idle {
+  opacity: 0;
+}
+
+.lightbox-bar {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  width: 100%;
+  height: 48px;
+  padding: 0 4px;
+  border-radius: 12px;
+  /* Same scrim as the title panel above it, so they read as one piece. */
+  background: rgb(0 0 0 / 0.45);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: rgb(255 255 255 / 0.9);
+  pointer-events: auto;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.lightbox-chrome.is-idle .lightbox-bar {
+  pointer-events: none;
+}
+
+.lightbox-btn {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition:
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.lightbox-btn svg {
+  display: block;
+  width: 20px;
+  height: 20px;
+}
+
+.lightbox-btn:focus-visible,
+.lightbox-track:focus-visible {
+  outline: 2px solid rgb(255 255 255 / 0.6);
+  outline-offset: -2px;
+}
+
+.lightbox-time {
+  flex: none;
+  min-width: 2.75em;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  color: rgb(255 255 255 / 0.75);
+}
+
+/* The hit area is the full bar height; the visible rail is a few px inside
+ * it. touch-action: none keeps a horizontal drag from turning into a page
+ * gesture on touch screens. */
+.lightbox-track {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 44px;
+  margin: 0 8px;
+  display: flex;
+  align-items: center;
+  border-radius: 6px;
+  cursor: pointer;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.lightbox-rail {
+  position: relative;
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgb(255 255 255 / 0.2);
+  transition: height 0.15s ease;
+}
+
+.lightbox-buffered,
+.lightbox-progress {
+  position: absolute;
+  inset: 0;
+  transform: scaleX(0);
+  transform-origin: 0 50%;
+}
+
+.lightbox-buffered {
+  background: rgb(255 255 255 / 0.3);
+}
+
+.lightbox-progress {
+  background: #fff;
+}
+
+.lightbox-thumb {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.4);
+  pointer-events: none;
+  transition: transform 0.15s ease;
+}
+
+.lightbox-bubble {
+  position: absolute;
+  bottom: calc(100% - 4px);
+  left: 0;
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: rgb(0 0 0 / 0.75);
+  color: #fff;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.lightbox-bar.is-scrubbing .lightbox-bubble,
+.lightbox-track.is-hover .lightbox-bubble {
+  opacity: 1;
+}
+
+.lightbox-bar.is-scrubbing .lightbox-rail {
+  height: 6px;
+}
+
+/* Same gate as .lightbox-close: iOS would hold :hover after a tap. */
+@media (hover: hover) {
+  .lightbox-btn:hover {
+    background: rgb(255 255 255 / 0.1);
+    color: #fff;
+  }
+
+  .lightbox-track:hover .lightbox-rail {
+    height: 6px;
+  }
+
+  /* With a mouse the thumb only shows while it can be used. */
+  .lightbox-thumb {
+    transform: scale(0);
+  }
+
+  .lightbox-track:hover .lightbox-thumb,
+  .lightbox-track:focus-visible .lightbox-thumb,
+  .lightbox-bar.is-scrubbing .lightbox-thumb {
+    transform: scale(1);
+  }
+}
+
+@media (min-width: 640px) {
+  .lightbox-bar {
+    height: 44px;
+  }
+
+  .lightbox-btn {
+    width: 36px;
+    height: 36px;
+  }
+
+  .lightbox-btn svg {
+    width: 18px;
+    height: 18px;
+  }
+
+  .lightbox-track {
+    height: 36px;
+  }
+
+  .lightbox-thumb {
+    width: 12px;
+    height: 12px;
+    margin: -6px 0 0 -6px;
   }
 }
 

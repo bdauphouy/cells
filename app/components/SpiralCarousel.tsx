@@ -3,6 +3,7 @@
 import fragmentShader from "@/lib/shaders/card.frag.glsl";
 import vertexShader from "@/lib/shaders/card.vert.glsl";
 import Hls from "hls.js";
+import { createLightboxControls } from "@/components/lightbox-controls";
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 
@@ -550,9 +551,9 @@ const ACTIVATIONS_PER_TICK = 4;
  * A tap grows the card from its exact on-screen rect into a real <video>
  * element — a lightbox, not a modal bolted on top. The card's mesh hides the
  * instant the clone appears in its place, so the handoff reads as one
- * continuous shape rather than a swap. The player carries no controls of its
- * own; the only chrome over it is this component's close button and info
- * panel.
+ * continuous shape rather than a swap. The player has no native controls;
+ * its chrome is this component's close button and a bottom-left dock holding
+ * the info panel and the timeline/play/mute bar from lightbox-controls.
  */
 /* ── Background grid ──────────────────────────────────────────────────────
  * A faint white grid sits behind the cards at all times; a brighter patch
@@ -1047,17 +1048,12 @@ export default function SpiralCarousel({
     backdrop.style.cssText =
       "position:fixed;inset:0;z-index:40;background:rgba(0,0,0,0);display:none;transition:background-color 0.5s ease;";
     const fsVideo = document.createElement("video");
-    /* No native controls. These are reels a few seconds long that open on a
-     * tap and are meant to be watched, not scrubbed, and every browser's
-     * chrome — timeline, mute, fullscreen, PiP — is a second set of furniture
-     * laid over footage that already fills the screen. On iOS it is also drawn
-     * in a layer above the page, so it wins any overlap with this component's
-     * own chrome rather than sitting under it.
-     *
-     * Two things it did carry that the page still owes the viewer: a way out,
-     * which is the close button, the backdrop, Escape, and now a tap on the
-     * video itself (see the listener by closeVideo); and a way to start
-     * playback if autoplay is refused, which is the muted retry in openVideo.
+    /* No native controls: every browser draws its own, they can't be styled,
+     * and on iOS they sit in a layer above the page that wins any overlap with
+     * this component's chrome. The timeline, play/pause and mute come from
+     * lightbox-controls instead, which also owns what a tap on the video does
+     * (toggle playback). The way out is the close button, the backdrop and
+     * Escape.
      */
     fsVideo.controls = false;
     // Still required, and now for the only reason that was ever load-bearing:
@@ -1095,24 +1091,23 @@ export default function SpiralCarousel({
     closeBtn.className = "lightbox-close";
     closeBtn.style.cssText = "display:none;opacity:0;pointer-events:none;";
 
-    /* Title + description for the open video, anchored bottom-left over the
-     * backdrop like the close button is anchored top-right — both fade in on
-     * the same schedule once the player has finished expanding.
+    /* Title + description for the open video, in the bottom-left dock over
+     * the backdrop like the close button is anchored top-right — both fade in
+     * on the same schedule once the player has finished expanding.
      *
      * Scrimmed like the bio panel (see HeroBio) rather than set straight on the
      * footage: the text sits over whatever the video happens to be showing, and
      * a bright frame underneath left it unreadable. Same black/45 + blur, so
      * the two panels read as the same piece of furniture.
      *
-     * Back on the same 20px inset as the rest of the chrome. It spent a while
-     * lifted to 72px to clear the native control bar iOS anchors inside the
-     * bottom of the video — the description ran straight through the timeline —
-     * but with the controls gone that bar does not exist and the corner is the
-     * panel's own. The safe-area term stays: the home indicator is still there.
+     * The player's own control bar sits directly under it in the same dock
+     * (see .lightbox-dock), so the two never overlap and share one inset:
+     * the screen's bottom-left corner on a phone, the bottom of the picture,
+     * centred on it, from `sm` up.
      */
     const infoPanel = document.createElement("div");
     infoPanel.style.cssText =
-      "position:fixed;left:20px;bottom:calc(20px + env(safe-area-inset-bottom,0px));z-index:42;box-sizing:border-box;max-width:min(480px,calc(100vw - 40px));padding:10px 12px;border-radius:12px;background:rgba(0,0,0,0.45);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);opacity:0;transform:translateY(6px);pointer-events:none;transition:opacity 0.3s ease,transform 0.3s ease;";
+      "box-sizing:border-box;max-width:min(480px,100%);padding:10px 12px;border-radius:12px;background:rgba(0,0,0,0.45);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);pointer-events:none;";
     const infoTitle = document.createElement("div");
     infoTitle.style.cssText =
       "color:#fff;font-size:16px;font-weight:600;letter-spacing:0.01em;";
@@ -1122,10 +1117,22 @@ export default function SpiralCarousel({
     infoPanel.appendChild(infoTitle);
     infoPanel.appendChild(infoDescription);
 
+    /* Two layers on purpose: the dock's opacity belongs to the open/close
+     * animation below, the inner chrome's to the controls' idle fade, so
+     * neither has to know about the other's state. */
+    const dock = document.createElement("div");
+    dock.className = "lightbox-dock";
+    dock.style.cssText = "display:none;opacity:0;transform:translateY(6px);";
+    const dockChrome = document.createElement("div");
+    dockChrome.className = "lightbox-chrome";
+    const controls = createLightboxControls(fsVideo, dockChrome);
+    dockChrome.append(infoPanel, controls.bar);
+    dock.appendChild(dockChrome);
+
     document.body.appendChild(backdrop);
     document.body.appendChild(fsVideo);
     document.body.appendChild(closeBtn);
-    document.body.appendChild(infoPanel);
+    document.body.appendChild(dock);
 
     /* The canvas fills a fixed, full-viewport host, so its box only moves
      * when the viewport does. Reading it back from the DOM instead — which
@@ -1187,6 +1194,14 @@ export default function SpiralCarousel({
       fsVideo.style.top = `${fsBox.top}px`;
       fsVideo.style.width = `${fsBox.width}px`;
       fsVideo.style.height = `${fsBox.height}px`;
+      // From `sm` up the dock is laid out over the picture rather than the
+      // viewport (see .lightbox-dock), so it needs to know where that is.
+      dock.style.setProperty("--video-left", `${fsBox.left}px`);
+      dock.style.setProperty("--video-width", `${fsBox.width}px`);
+      dock.style.setProperty(
+        "--video-bottom",
+        `${window.innerHeight - fsBox.top - fsBox.height}px`,
+      );
     };
 
     // Maps the laid-out fullscreen box onto an arbitrary screen rect.
@@ -1237,7 +1252,7 @@ export default function SpiralCarousel({
       infoTitle.textContent = clip.title;
       infoDescription.textContent = clip.description ?? "";
       infoDescription.style.display = clip.description ? "block" : "none";
-      infoPanel.style.display = "block";
+      dock.style.display = "block";
 
       /* Nothing on the spiral is visible from here — the backdrop is on its
        * way to opaque black over all of it. Every card's decoder is therefore
@@ -1283,6 +1298,7 @@ export default function SpiralCarousel({
         fsVideo.muted = true;
         void fsVideo.play().catch(() => {});
       });
+      controls.open();
 
       // Force a style flush so the browser commits the start transform before
       // it transitions to the end one, instead of collapsing both into one.
@@ -1300,8 +1316,8 @@ export default function SpiralCarousel({
           backdrop.style.background = "rgba(0,0,0,0.92)";
           closeBtn.style.opacity = "1";
           closeBtn.style.pointerEvents = "auto";
-          infoPanel.style.opacity = "1";
-          infoPanel.style.transform = "translateY(0)";
+          dock.style.opacity = "1";
+          dock.style.transform = "translateY(0)";
         });
       });
     };
@@ -1330,8 +1346,9 @@ export default function SpiralCarousel({
       fsVideo.style.pointerEvents = "none";
       closeBtn.style.opacity = "0";
       closeBtn.style.pointerEvents = "none";
-      infoPanel.style.opacity = "0";
-      infoPanel.style.transform = "translateY(6px)";
+      dock.style.opacity = "0";
+      dock.style.transform = "translateY(6px)";
+      controls.close();
 
       fsVideo.muted = true;
 
@@ -1340,7 +1357,7 @@ export default function SpiralCarousel({
         fsVideo.style.display = "none";
         backdrop.style.display = "none";
         closeBtn.style.display = "none";
-        infoPanel.style.display = "none";
+        dock.style.display = "none";
         openCard = null;
         frozen = false;
       }, CLOSE_MS);
@@ -1348,11 +1365,6 @@ export default function SpiralCarousel({
 
     closeBtn.addEventListener("click", closeVideo);
     backdrop.addEventListener("click", closeVideo);
-    // The player covers most of the screen and, without controls, would
-    // otherwise be the one part of it a tap does nothing to — the backdrop it
-    // sits over is a sibling, so those taps never reach that handler. Closing
-    // on it makes the whole lightbox dismiss the same way wherever it is hit.
-    fsVideo.addEventListener("click", closeVideo);
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") closeVideo();
     };
@@ -1816,14 +1828,14 @@ export default function SpiralCarousel({
       canvas.removeEventListener("pointerleave", onPointerLeave);
       closeBtn.removeEventListener("click", closeVideo);
       backdrop.removeEventListener("click", closeVideo);
-      fsVideo.removeEventListener("click", closeVideo);
       fsHls?.destroy();
       fsVideo.pause();
       fsVideo.removeAttribute("src");
       fsVideo.remove();
       backdrop.remove();
       closeBtn.remove();
-      infoPanel.remove();
+      controls.destroy();
+      dock.remove();
       titleLabel.remove();
       for (const card of cards) {
         deactivateCard(card);
