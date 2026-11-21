@@ -19,6 +19,9 @@ type ShellProps<Id extends string> = {
   nav: AdminNavItem<Id>[];
   active: Id;
   onLogout: () => void;
+  // Lets a section that needs the room (the Kanban board) use more of a
+  // large screen than the default reading width.
+  wide?: boolean;
   children: ReactNode;
 };
 
@@ -29,6 +32,7 @@ export default function AdminShell<Id extends string>({
   nav,
   active,
   onLogout,
+  wide = false,
   children,
 }: ShellProps<Id>) {
   return (
@@ -128,7 +132,9 @@ export default function AdminShell<Id extends string>({
       </aside>
 
       <main className="min-w-0 px-4 py-6 sm:px-8 md:ml-60 md:py-10">
-        <div className="mx-auto w-full max-w-5xl">{children}</div>
+        <div className={cn("mx-auto w-full", wide ? "max-w-7xl" : "max-w-5xl")}>
+          {children}
+        </div>
       </main>
     </div>
   );
