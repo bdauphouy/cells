@@ -3,7 +3,8 @@
 import Image from "next/image";
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { ExternalLink, LogOut, type LucideIcon } from "lucide-react";
+import { ExternalLink, Eye, LogOut, type LucideIcon } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -19,6 +20,8 @@ type ShellProps<Id extends string> = {
   nav: AdminNavItem<Id>[];
   active: Id;
   onLogout: () => void;
+  // Email of the signed-in account, shown above the log-out button.
+  account?: string;
   // Lets a section that needs the room (the Kanban board) use more of a
   // large screen than the default reading width.
   wide?: boolean;
@@ -32,6 +35,7 @@ export default function AdminShell<Id extends string>({
   nav,
   active,
   onLogout,
+  account,
   wide = false,
   children,
 }: ShellProps<Id>) {
@@ -111,6 +115,11 @@ export default function AdminShell<Id extends string>({
         </nav>
 
         <div className="hidden gap-1 border-t border-border p-3 md:grid">
+          {account && (
+            <p className="truncate px-3 pb-1 text-xs text-muted-foreground" title={account}>
+              {account}
+            </p>
+          )}
           <Button
             variant="ghost"
             className="justify-start gap-2.5 px-3 text-muted-foreground"
@@ -209,5 +218,27 @@ export function StatCard({
       <div className="text-2xl font-semibold tabular-nums">{value}</div>
       {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
     </div>
+  );
+}
+
+// Wraps a section the signed-in account may see but not change. A disabled
+// fieldset switches off every native control inside it in one go (inputs,
+// buttons, file pickers), and the proxy refuses the writes regardless.
+export function ReadOnly({
+  readOnly,
+  children,
+}: {
+  readOnly: boolean;
+  children: ReactNode;
+}) {
+  if (!readOnly) return children;
+  return (
+    <fieldset disabled className="m-0 min-w-0 border-0 p-0">
+      <Alert className="mb-6">
+        <Eye />
+        <AlertDescription>View only. Changes here are reserved for the owner.</AlertDescription>
+      </Alert>
+      {children}
+    </fieldset>
   );
 }

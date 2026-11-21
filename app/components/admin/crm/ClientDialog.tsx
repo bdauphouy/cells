@@ -26,6 +26,8 @@ import { StatusPill } from "./fields";
 export type ClientDraft = { mode: "edit"; client: Client } | { mode: "new" };
 
 type Props = {
+  // Fields are shown disabled and only a Close button remains.
+  readOnly?: boolean;
   draft: ClientDraft | null;
   projects: Project[];
   onClose: () => void;
@@ -61,6 +63,7 @@ const FIELDS = [
 
 function ClientForm({
   draft,
+  readOnly = false,
   projects,
   onClose,
   onSaved,
@@ -137,7 +140,7 @@ function ClientForm({
         <DialogTitle>{existing ? existing.name : "New client"}</DialogTitle>
       </DialogHeader>
 
-      <div className="grid gap-3">
+      <fieldset disabled={readOnly} className="m-0 grid min-w-0 gap-3 border-0 p-0">
         <div className="grid gap-3 sm:grid-cols-2">
           {FIELDS.map((f) => (
             <div key={f.key} className="grid gap-1.5">
@@ -168,14 +171,16 @@ function ClientForm({
           <div className="grid gap-2">
             <div className="flex items-center justify-between">
               <span className="text-sm font-medium">Projects</span>
-              <Button
-                type="button"
-                variant="ghost"
-                size="xs"
-                onClick={() => onNewProject(existing.id)}
-              >
-                + Add project
-              </Button>
+              {!readOnly && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  onClick={() => onNewProject(existing.id)}
+                >
+                  + Add project
+                </Button>
+              )}
             </div>
             {theirProjects.length ? (
               <ul className="grid max-h-48 gap-1 overflow-y-auto">
@@ -221,33 +226,41 @@ function ClientForm({
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
-      </div>
+      </fieldset>
 
-      <DialogFooter className="sm:justify-between">
-        {existing ? (
-          <Button
-            type="button"
-            variant="destructive"
-            onClick={remove}
-            disabled={saving || theirProjects.length > 0}
-            title={theirProjects.length ? "Delete or reassign their projects first" : undefined}
-            onBlur={() => setConfirmDelete(false)}
-          >
-            <Trash2 />
-            {confirmDelete ? "Click again to delete" : "Delete"}
-          </Button>
-        ) : (
-          <span />
-        )}
-        <div className="flex flex-col-reverse gap-2 sm:flex-row">
+      {readOnly ? (
+        <DialogFooter>
           <Button type="button" variant="outline" onClick={onClose}>
-            Cancel
+            Close
           </Button>
-          <Button type="submit" disabled={!canSave}>
-            {saving ? "Saving…" : existing ? "Save" : "Add client"}
-          </Button>
-        </div>
-      </DialogFooter>
+        </DialogFooter>
+      ) : (
+        <DialogFooter className="sm:justify-between">
+          {existing ? (
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={remove}
+              disabled={saving || theirProjects.length > 0}
+              title={theirProjects.length ? "Delete or reassign their projects first" : undefined}
+              onBlur={() => setConfirmDelete(false)}
+            >
+              <Trash2 />
+              {confirmDelete ? "Click again to delete" : "Delete"}
+            </Button>
+          ) : (
+            <span />
+          )}
+          <div className="flex flex-col-reverse gap-2 sm:flex-row">
+            <Button type="button" variant="outline" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={!canSave}>
+              {saving ? "Saving…" : existing ? "Save" : "Add client"}
+            </Button>
+          </div>
+        </DialogFooter>
+      )}
     </form>
   );
 }

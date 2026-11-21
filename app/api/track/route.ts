@@ -1,14 +1,15 @@
 import type { NextRequest } from "next/server";
-import { ADMIN_SESSION_COOKIE, verifySessionCookie } from "@/lib/admin-auth";
+import { ADMIN_SESSION_COOKIE, getViewer } from "@/lib/admin-auth";
 import { isBot, recordVisit, referrerHost } from "@/lib/analytics";
 
 // Hit by navigator.sendBeacon from <VisitTracker />, which sends the body as
 // text/plain — hence request.text() rather than request.json().
 export async function POST(request: NextRequest) {
   const ua = request.headers.get("user-agent") ?? "";
-  const loggedInAdmin = verifySessionCookie(
+  // Either account browsing the site isn't a visit worth counting.
+  const loggedInAdmin = !!(await getViewer(
     request.cookies.get(ADMIN_SESSION_COOKIE)?.value,
-  );
+  ));
   if (isBot(ua) || loggedInAdmin) return new Response(null, { status: 204 });
 
   let body: { referrer?: unknown } = {};

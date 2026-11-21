@@ -35,6 +35,8 @@ export type ProjectDraft =
   | { mode: "new"; status: ProjectStatus; clientId?: string };
 
 type Props = {
+  // Fields are shown disabled and only a Close button remains.
+  readOnly?: boolean;
   draft: ProjectDraft | null;
   clients: Client[];
   defaultCurrency: Currency;
@@ -59,6 +61,7 @@ export default function ProjectDialog({ draft, onClose, ...rest }: Props) {
 
 function ProjectForm({
   draft,
+  readOnly = false,
   clients,
   defaultCurrency,
   nextOrder,
@@ -160,10 +163,10 @@ function ProjectForm({
       }}
     >
       <DialogHeader>
-        <DialogTitle>{existing ? "Edit project" : "New project"}</DialogTitle>
+        <DialogTitle>{readOnly ? "Project" : existing ? "Edit project" : "New project"}</DialogTitle>
       </DialogHeader>
 
-      <div className="grid gap-3">
+      <fieldset disabled={readOnly} className="m-0 grid min-w-0 gap-3 border-0 p-0">
         <div className="grid gap-1.5">
           <Label htmlFor="project-title">Project</Label>
           <Input
@@ -310,32 +313,40 @@ function ProjectForm({
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
-      </div>
+      </fieldset>
 
-      <DialogFooter className="sm:justify-between">
-        {existing ? (
-          <Button
-            type="button"
-            variant="destructive"
-            onClick={remove}
-            disabled={saving}
-            onBlur={() => setConfirmDelete(false)}
-          >
-            <Trash2 />
-            {confirmDelete ? "Click again to delete" : "Delete"}
-          </Button>
-        ) : (
-          <span />
-        )}
-        <div className="flex flex-col-reverse gap-2 sm:flex-row">
+      {readOnly ? (
+        <DialogFooter>
           <Button type="button" variant="outline" onClick={onClose}>
-            Cancel
+            Close
           </Button>
-          <Button type="submit" disabled={!canSave}>
-            {saving ? "Saving…" : existing ? "Save" : "Add project"}
-          </Button>
-        </div>
-      </DialogFooter>
+        </DialogFooter>
+      ) : (
+        <DialogFooter className="sm:justify-between">
+          {existing ? (
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={remove}
+              disabled={saving}
+              onBlur={() => setConfirmDelete(false)}
+            >
+              <Trash2 />
+              {confirmDelete ? "Click again to delete" : "Delete"}
+            </Button>
+          ) : (
+            <span />
+          )}
+          <div className="flex flex-col-reverse gap-2 sm:flex-row">
+            <Button type="button" variant="outline" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={!canSave}>
+              {saving ? "Saving…" : existing ? "Save" : "Add project"}
+            </Button>
+          </div>
+        </DialogFooter>
+      )}
     </form>
   );
 }

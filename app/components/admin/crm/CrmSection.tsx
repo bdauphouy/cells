@@ -37,7 +37,15 @@ type View = "board" | "clients";
 // The Done column only grows, so it shows the latest few unless asked.
 const DONE_PREVIEW = 8;
 
-export default function CrmSection({ active }: { active: boolean }) {
+// readOnly: the board and the dialogs still open, but nothing can be added,
+// moved or saved (the proxy refuses those writes anyway).
+export default function CrmSection({
+  active,
+  readOnly = false,
+}: {
+  active: boolean;
+  readOnly?: boolean;
+}) {
   const [clients, setClients] = useState<Client[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -216,7 +224,7 @@ export default function CrmSection({ active }: { active: boolean }) {
             >
               <RefreshCw />
             </Button>
-            {view === "board" ? (
+            {readOnly ? null : view === "board" ? (
               <Button onClick={() => setProjectDraft({ mode: "new", status: "pending" })}>
                 <Plus />
                 New project
@@ -323,15 +331,17 @@ export default function CrmSection({ active }: { active: boolean }) {
                       <span className="text-xs text-muted-foreground tabular-nums">
                         {cards.length}
                       </span>
-                      <Button
-                        variant="ghost"
-                        size="icon-xs"
-                        className="ml-auto"
-                        aria-label={`Add a project to ${STATUS_LABELS[status]}`}
-                        onClick={() => setProjectDraft({ mode: "new", status })}
-                      >
-                        <Plus />
-                      </Button>
+                      {!readOnly && (
+                        <Button
+                          variant="ghost"
+                          size="icon-xs"
+                          className="ml-auto"
+                          aria-label={`Add a project to ${STATUS_LABELS[status]}`}
+                          onClick={() => setProjectDraft({ mode: "new", status })}
+                        >
+                          <Plus />
+                        </Button>
+                      )}
                     </header>
                     {due.length > 0 && !isDone && (
                       <p className="-mt-1 px-1.5 text-xs text-muted-foreground tabular-nums">
@@ -363,6 +373,7 @@ export default function CrmSection({ active }: { active: boolean }) {
                               project={p}
                               clientName={clientName(p.clientId)}
                               dragging={dragId === p.id}
+                              draggable={!readOnly}
                               onOpen={() => setProjectDraft({ mode: "edit", project: p })}
                               onDragStart={(e) => {
                                 e.dataTransfer.setData("text/plain", p.id);
@@ -400,6 +411,7 @@ export default function CrmSection({ active }: { active: boolean }) {
       )}
 
       <ProjectDialog
+        readOnly={readOnly}
         draft={projectDraft}
         clients={clients}
         defaultCurrency={defaultCurrency}
@@ -413,6 +425,7 @@ export default function CrmSection({ active }: { active: boolean }) {
       />
 
       <ClientDialog
+        readOnly={readOnly}
         draft={clientDraft}
         projects={projects}
         onClose={() => setClientDraft(null)}
@@ -439,6 +452,7 @@ function ProjectCard({
   project: p,
   clientName,
   dragging,
+  draggable,
   onOpen,
   onDragStart,
   onDragEnd,
@@ -446,6 +460,7 @@ function ProjectCard({
   project: Project;
   clientName: string;
   dragging: boolean;
+  draggable: boolean;
   onOpen: () => void;
   onDragStart: (e: DragEvent<HTMLDivElement>) => void;
   onDragEnd: () => void;
@@ -458,7 +473,7 @@ function ProjectCard({
       data-card-id={p.id}
       role="button"
       tabIndex={0}
-      draggable
+      draggable={draggable}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       onClick={onOpen}
@@ -469,7 +484,8 @@ function ProjectCard({
         }
       }}
       className={cn(
-        "grid cursor-grab gap-1.5 rounded-lg bg-card p-3 text-left ring-1 ring-foreground/10 transition-[opacity,box-shadow] outline-none hover:ring-foreground/25 focus-visible:ring-2 focus-visible:ring-ring active:cursor-grabbing",
+        "grid gap-1.5 rounded-lg bg-card p-3 text-left ring-1 ring-foreground/10 transition-[opacity,box-shadow] outline-none hover:ring-foreground/25 focus-visible:ring-2 focus-visible:ring-ring",
+        draggable ? "cursor-grab active:cursor-grabbing" : "cursor-pointer",
         dragging && "opacity-40",
       )}
     >

@@ -28,15 +28,16 @@ app/
     SpiralCarousel.tsx  the WebGL scene: helix, streams, lightbox
     CarouselExperience  loading gate in front of the scene
     HeroOverlay         tools, socials, CV download
-  admin/                password-gated dashboard
+  admin/                sign-in-gated dashboard
   api/admin/            upload, library and hero-settings routes
 lib/
   library.ts            video library in Redis + card resolution
   livepeer.ts           Livepeer client and playback resolution
   hero-settings.ts      hero overlay content
   kv.ts                 shared Redis client
-  admin-auth.ts         password check and signed session cookie
-proxy.ts                auth gate for /admin and /api/admin
+  admin-access.ts       the two accounts, sections and access levels
+  admin-auth.ts         sign-in, member record and signed session cookie
+proxy.ts                auth and per-section access for /admin and /api/admin
 ```
 
 ## Uploads
@@ -60,10 +61,23 @@ and the burn-in. Settings only apply to future uploads — a burned-in mark
 can't be changed after the fact. Browsers without WebCodecs can still upload,
 just without the watermark.
 
+## Accounts
+
+Two fixed accounts, listed in `lib/admin-access.ts`. The owner sees
+everything and signs in with `ADMIN_PASSWORD` until it sets its own password.
+The member's password and its access to each section (hidden, view or edit)
+are set by the owner in the dashboard's Access section. Either account can
+change its own password in Account, which signs its other devices out.
+Passwords are stored in Redis as scrypt hashes (`admin:owner`,
+`admin:member`); deleting `admin:owner` puts the owner back on
+`ADMIN_PASSWORD` after a forgotten password. `proxy.ts` maps each `/api/admin` route to
+a section: reads need "view", writes need "edit", and an unmapped route is
+owner-only.
+
 ## Environment
 
 ```
-ADMIN_PASSWORD          # single shared admin password; also the HMAC key
+ADMIN_PASSWORD          # owner's initial password (contact@cellsedition.com); also the HMAC key
 LIVEPEER_API_KEY
 KV_REST_API_URL         # Upstash Redis
 KV_REST_API_TOKEN

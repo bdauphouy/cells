@@ -1,26 +1,16 @@
-import { cookies } from "next/headers";
-import {
-  ADMIN_SESSION_COOKIE,
-  SESSION_SECONDS,
-  checkPassword,
-  createSessionCookie,
-} from "@/lib/admin-auth";
+import { authenticate, setSessionCookie } from "@/lib/admin-auth";
 
 export async function POST(request: Request) {
-  const { password } = await request.json().catch(() => ({ password: "" }));
+  const { email, password } = await request.json().catch(() => ({}));
 
-  if (typeof password !== "string" || !checkPassword(password)) {
-    return Response.json({ error: "Wrong password" }, { status: 401 });
+  const session =
+    typeof email === "string" && typeof password === "string"
+      ? await authenticate(email, password)
+      : null;
+  if (!session) {
+    return Response.json({ error: "Wrong email or password" }, { status: 401 });
   }
 
-  const jar = await cookies();
-  jar.set(ADMIN_SESSION_COOKIE, createSessionCookie(), {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
-    maxAge: SESSION_SECONDS,
-  });
-
+  await setSessionCookie(session);
   return Response.json({ ok: true });
 }

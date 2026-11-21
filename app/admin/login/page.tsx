@@ -17,6 +17,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 
 export default function AdminLoginPage() {
   const router = useRouter();
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -28,14 +29,14 @@ export default function AdminLoginPage() {
     const res = await fetch("/api/admin/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ password }),
+      body: JSON.stringify({ email, password }),
     });
     if (res.ok) {
       router.replace("/admin");
       router.refresh();
     } else {
       setPending(false);
-      setError("Wrong password.");
+      setError("Wrong email or password.");
     }
   };
 
@@ -53,17 +54,28 @@ export default function AdminLoginPage() {
         <CardHeader>
           <CardTitle>Admin</CardTitle>
           <CardDescription>
-            Sign in to manage the video library.
+            Sign in to manage the site.
           </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={submit} className="grid gap-4">
             <div className="grid gap-2">
+              <Label htmlFor="email">Email</Label>
+              <Input
+                id="email"
+                type="email"
+                autoComplete="username"
+                autoFocus
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </div>
+            <div className="grid gap-2">
               <Label htmlFor="password">Password</Label>
               <Input
                 id="password"
                 type="password"
-                autoFocus
+                autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
@@ -74,7 +86,7 @@ export default function AdminLoginPage() {
                 <AlertDescription>{error}</AlertDescription>
               </Alert>
             )}
-            <Button type="submit" disabled={pending || !password}>
+            <Button type="submit" disabled={pending || !email || !password}>
               {pending ? "Checking…" : "Sign in"}
             </Button>
           </form>
