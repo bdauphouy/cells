@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import { ESPRESSO_EVENT, isEspresso, toggleEspresso } from "@/lib/espresso";
 
 // The bio runs long enough to eat a third of a phone screen, so on mobile it
 // opens clamped to a few lines and the reader extends it. From `sm` up there's
@@ -13,6 +20,67 @@ import { useEffect, useId, useRef, useState } from "react";
 // `sm:max-h-none` overrides anyway.
 const COLLAPSED_CLASS = "max-h-[4.25rem]";
 const COLLAPSED_PX = 68;
+
+const subscribeEspresso = (onChange: () => void) => {
+  window.addEventListener(ESPRESSO_EVENT, onChange);
+  return () => window.removeEventListener(ESPRESSO_EVENT, onChange);
+};
+
+/* The first mention of coffee in the bio, whichever language it was written
+ * in. Bounded by letters rather than \b, which treats "é" as a non-word
+ * character and would never find the end of "café". */
+const COFFEE_WORD = /(?<!\p{L})(caf[eé]|coffee)(?!\p{L})/iu;
+
+/* The word itself, made into the switch for espresso mode (lib/espresso.ts):
+ * a wisp of steam over it says there is something here, the custom cursor
+ * turns into a cup over it, and a press pours. A real <button> so a keyboard
+ * or a screen reader gets to it too — it reads as the word, with its state.
+ */
+function CoffeeWord({ word }: { word: string }) {
+  // Read straight off <html>, where the mode lives, rather than mirrored into
+  // state — so the typed trigger and this button can never disagree.
+  const on = useSyncExternalStore(subscribeEspresso, isEspresso, () => false);
+
+  // No `title`: the custom cursor names it, and the two tooltips would say
+  // the same thing at once (the reason the overlay tiles dropped theirs).
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      data-cursor="coffee"
+      data-cursor-label={on ? "Back to work" : "Espresso?"}
+      // The panel around it toggles the bio open on a tap; this tap is for
+      // the coffee only.
+      onClick={(e) => {
+        e.stopPropagation();
+        toggleEspresso();
+      }}
+      className="coffee-word"
+    >
+      {/* Three S-shaped wisps, each rising and thinning out on its own beat
+          (see .coffee-steam in globals.css). */}
+      <svg aria-hidden viewBox="0 0 20 18" className="coffee-steam">
+        <path d="M5 17c-1.6-2 1.6-4 0-6s1.6-4 0-6" />
+        <path d="M10 17c-1.6-2 1.6-4 0-6s1.6-4 0-6" />
+        <path d="M15 17c-1.6-2 1.6-4 0-6s1.6-4 0-6" />
+      </svg>
+      {word}
+    </button>
+  );
+}
+
+function BioText({ bio }: { bio: string }) {
+  const match = COFFEE_WORD.exec(bio);
+  if (!match) return bio;
+  const at = match.index;
+  return (
+    <>
+      {bio.slice(0, at)}
+      <CoffeeWord word={match[0]} />
+      {bio.slice(at + match[0].length)}
+    </>
+  );
+}
 
 export default function HeroBio({ bio }: { bio: string }) {
   const [expanded, setExpanded] = useState(false);
@@ -72,7 +140,7 @@ export default function HeroBio({ bio }: { bio: string }) {
             : `${COLLAPSED_CLASS} mask-[linear-gradient(to_bottom,#000_55%,transparent)]`
         }`}
       >
-        {bio}
+        <BioText bio={bio} />
       </p>
       {/* Deliberately handler-less: the click it emits — from a tap or from
           Enter/Space — bubbles to the panel, which is the one place the toggle

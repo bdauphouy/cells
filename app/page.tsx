@@ -1,4 +1,6 @@
 import CarouselExperience from "@/components/CarouselExperience";
+import CoffeeMode from "@/components/CoffeeMode";
+import Cursor from "@/components/Cursor";
 import HeroOverlay from "@/components/HeroOverlay";
 import VisitTracker from "@/components/VisitTracker";
 import { socialHref } from "@/lib/hero-catalog";
@@ -51,36 +53,47 @@ function profileJsonLd(settings: HeroSettings) {
 export default async function Home() {
   const [cards, heroSettings] = await Promise.all([resolveCards(), getHeroSettings()]);
   return (
-    <main
-      // The hook globals.css uses to paint the overscroll gutter behind this
-      // page in the brand black rather than the default light `--background`;
-      // see the rule by the `.dark` block there.
-      data-hero
-      className="fixed inset-0 flex flex-col overflow-hidden bg-brand"
-    >
-      <script
-        type="application/ld+json"
-        // `<` is escaped so a stray `</script>` in an admin-authored bio can't
-        // close this tag early.
-        dangerouslySetInnerHTML={{
-          __html: JSON.stringify(profileJsonLd(heroSettings)).replace(/</g, "\\u003c"),
-        }}
-      />
-      {/* The only h1 on the page: the wordmark is the site's name, and without
-          it a crawler sees a heading-less document. */}
-      <h1 className="pointer-events-none absolute top-4 left-4 z-10 sm:top-6 sm:left-6">
-        <Image
-          src="/logo.svg"
-          alt={`${SITE_NAME} — Celeste Cuestas, video editor`}
-          width={140}
-          height={91}
-          className="h-10 w-auto sm:h-14"
-          priority
+    <>
+      <main
+        // The hook globals.css uses to paint the overscroll gutter behind this
+        // page in the brand black rather than the default light `--background`;
+        // see the rule by the `.dark` block there.
+        data-hero
+        className="fixed inset-0 flex flex-col overflow-hidden bg-brand"
+      >
+        <script
+          type="application/ld+json"
+          // `<` is escaped so a stray `</script>` in an admin-authored bio can't
+          // close this tag early.
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify(profileJsonLd(heroSettings)).replace(/</g, "\\u003c"),
+          }}
         />
-      </h1>
-      <HeroOverlay settings={heroSettings} />
-      <CarouselExperience cards={cards} />
-      <VisitTracker />
-    </main>
+        {/* The only h1 on the page: the wordmark is the site's name, and without
+            it a crawler sees a heading-less document. */}
+        <h1
+          data-enter="down"
+          className="pointer-events-none absolute top-4 left-4 z-10 sm:top-6 sm:left-6"
+        >
+          <Image
+            src="/logo.svg"
+            alt={`${SITE_NAME} — Celeste Cuestas, video editor`}
+            width={140}
+            height={91}
+            className="h-10 w-auto sm:h-14"
+            priority
+          />
+        </h1>
+        <HeroOverlay settings={heroSettings} />
+        <CarouselExperience cards={cards} />
+        <VisitTracker />
+      </main>
+      {/* Outside <main> on purpose. That element is `fixed`, which makes it a
+          stacking context, and the lightbox is appended to <body> at z-40 —
+          so anything inside <main> sits under the open player whatever its own
+          z-index says. The pointer has to be above all of it. */}
+      <Cursor />
+      <CoffeeMode />
+    </>
   );
 }

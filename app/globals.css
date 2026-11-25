@@ -145,17 +145,17 @@
   background-image:
     radial-gradient(
       46% 72% at 22% 42%,
-      rgb(214 229 255 / 0.2),
+      color-mix(in srgb, var(--puff) 20%, transparent),
       transparent 72%
     ),
     radial-gradient(
       40% 64% at 55% 26%,
-      rgb(214 229 255 / 0.16),
+      color-mix(in srgb, var(--puff) 16%, transparent),
       transparent 72%
     ),
     radial-gradient(
       48% 76% at 84% 48%,
-      rgb(214 229 255 / 0.19),
+      color-mix(in srgb, var(--puff) 19%, transparent),
       transparent 72%
     );
   animation: cloud-drift 41s ease-in-out infinite;
@@ -165,12 +165,12 @@
   background-image:
     radial-gradient(
       58% 88% at 32% 28%,
-      rgb(214 229 255 / 0.034),
+      color-mix(in srgb, var(--puff) 3.4%, transparent),
       transparent 74%
     ),
     radial-gradient(
       52% 80% at 72% 38%,
-      rgb(214 229 255 / 0.028),
+      color-mix(in srgb, var(--puff) 2.8%, transparent),
       transparent 74%
     );
   animation: cloud-drift 67s ease-in-out infinite reverse;
@@ -650,5 +650,695 @@ body:has([data-admin]) {
   }
   html {
     @apply font-sans;
+  }
+}
+
+/* ── Pill ──────────────────────────────────────────────────────────────────
+ * The white label: a video's title at the bottom of the screen, and the tag
+ * that rides beside the cursor naming a tool, a profile or a phone number.
+ * One component, so the two cannot drift apart — colour, weight, tracking and
+ * the fully rounded ends are all here, and each user adds only where it sits
+ * and how it appears (see titleLabel in SpiralCarousel, .cursor-tag-text
+ * below).
+ *
+ * The small variant changes size and nothing else. Its line-height is pinned
+ * because the tag is measured to be placed against the pointer, and a 12px
+ * label on the page's inherited 1.5 leaves it taller than it looks.
+ *
+ * Its padding is deliberately uneven. Geist's ascent is a full em and its
+ * descent under a third of one, so the browser centres a line box that is
+ * mostly above the baseline — at 1.3 that put the capitals a pixel above the
+ * middle of the pill, which at this size reads as plainly off. Half a pixel
+ * moved from the bottom to the top lands cap height dead centre (8.3 / 8.3,
+ * measured), same overall height. The base size happens to centre on its own
+ * at 1.5. Retune this pair, not the line-height, if the font ever changes.
+ */
+.pill {
+  padding: 10px 20px;
+  border-radius: 9999px;
+  background: #fff;
+  color: #111;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.pill--sm {
+  padding: 5.5px 10px 4.5px;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+/* ── Custom cursor ─────────────────────────────────────────────────────────
+ * Drawn by app/components/Cursor.tsx, which only positions things and names
+ * the state; everything the cursor looks like in each state is here.
+ *
+ * The native pointer is given up through a class that component sets while
+ * its loop is running, not through a media query — so if the script never
+ * runs, or a touch-only device loads the page, nobody is left without one.
+ * `!important` because several elements set `cursor` inline from JS (the
+ * canvas, the lightbox video) for exactly that fallback case.
+ */
+html.has-cursor,
+html.has-cursor * {
+  cursor: none !important;
+}
+
+.cursor {
+  position: fixed;
+  top: 0;
+  left: 0;
+  /* Above the lightbox (40-42) and the loader: it is the pointer. */
+  z-index: 100;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.cursor[data-visible="true"] {
+  opacity: 1;
+}
+
+/* The lightbox hides the pointer along with its chrome once the viewer has
+ * stopped moving; see setVisible in lightbox-controls. */
+.cursor[data-state="hidden"] {
+  opacity: 0;
+}
+
+.cursor-dot,
+.cursor-cell,
+.cursor-tag,
+.cursor-pulse {
+  position: absolute;
+  top: 0;
+  left: 0;
+}
+
+.cursor-dot,
+.cursor-cell,
+.cursor-tag {
+  will-change: transform;
+}
+
+/* The precise point. A pseudo-element so the JS-driven translate on the dot
+ * itself and the state-driven scale here never share a property. */
+.cursor-dot::before {
+  content: "";
+  position: absolute;
+  width: 6px;
+  height: 6px;
+  margin: -3px 0 0 -3px;
+  border-radius: 50%;
+  background: #fff;
+  /* White on a white frame of video is no pointer at all; the hairline and
+   * the soft shadow are what keep it findable there. */
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.08),
+    0 1px 4px rgb(0 0 0 / 0.3);
+  transition:
+    scale 0.25s ease,
+    opacity 0.2s ease;
+}
+
+/* The cell: sized per state below, centred on the pointer by its own
+ * `translate` (a percentage of itself, so it stays centred mid-resize), and
+ * stretched by the `transform` Cursor.tsx writes. */
+.cursor-shape {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 34px;
+  height: 34px;
+  translate: -50% -50%;
+  border: 1px solid rgb(255 255 255 / 0.6);
+  border-radius: 50%;
+  background: rgb(255 255 255 / 0);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 0.06);
+  transition:
+    width 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+    height 0.4s cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 0.25s ease,
+    border-color 0.25s ease,
+    opacity 0.25s ease;
+  animation: cursor-wobble 7s ease-in-out infinite;
+}
+
+/* Never quite a circle: the outline drifts between a few near-round shapes,
+ * the way the cells in the mark are each a little different. */
+@keyframes cursor-wobble {
+  0%,
+  100% {
+    border-radius: 50% 50% 50% 50% / 50% 50% 50% 50%;
+  }
+  25% {
+    border-radius: 58% 42% 46% 54% / 45% 55% 45% 55%;
+  }
+  50% {
+    border-radius: 44% 56% 57% 43% / 56% 44% 53% 47%;
+  }
+  75% {
+    border-radius: 53% 47% 42% 58% / 48% 58% 42% 52%;
+  }
+}
+
+.cursor-icon {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 20px;
+  height: 20px;
+  translate: -50% -50%;
+  fill: currentColor;
+  color: #fff;
+  opacity: 0;
+  scale: 0.5;
+  transition:
+    opacity 0.2s ease,
+    scale 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.cursor-icon--stroke {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Over a control the tile's own hover state is the feedback, so the ring
+ * steps back and leaves the dot. */
+.cursor[data-state="link"] .cursor-shape {
+  width: 14px;
+  height: 14px;
+  opacity: 0;
+}
+
+.cursor[data-state="link"] .cursor-dot::before {
+  scale: 1.5;
+}
+
+.cursor[data-state="grabbing"] .cursor-shape {
+  width: 22px;
+  height: 22px;
+  border-color: rgb(255 255 255 / 0.9);
+  background: rgb(255 255 255 / 0.22);
+}
+
+/* Shown over the spiral until it has been spun once: the only instruction on
+ * the page, and it retires itself. */
+.cursor[data-state="hint"] .cursor-shape {
+  width: 52px;
+  height: 52px;
+}
+
+/* A settled reel under the pointer: the cell fills and becomes the play
+ * button. Brand blue on white, the same pairing as the title pill below. */
+.cursor[data-state="play"] .cursor-shape {
+  width: 60px;
+  height: 60px;
+  border-color: #fff;
+  background: #fff;
+}
+
+.cursor[data-state="play"] .cursor-icon--play {
+  color: var(--brand);
+}
+
+/* Inside the lightbox the same marks are drawn dark-on-footage instead, like
+ * the control bar they sit above: a white disc over a playing video is a hole
+ * in the picture. */
+.cursor[data-state="video-play"] .cursor-shape,
+.cursor[data-state="video-pause"] .cursor-shape,
+.cursor[data-state="close"] .cursor-shape {
+  width: 56px;
+  height: 56px;
+  border-color: rgb(255 255 255 / 0.55);
+  background: rgb(0 0 0 / 0.4);
+}
+
+.cursor[data-state="hint"] .cursor-dot::before,
+.cursor[data-state="play"] .cursor-dot::before,
+.cursor[data-state="video-play"] .cursor-dot::before,
+.cursor[data-state="video-pause"] .cursor-dot::before,
+.cursor[data-state="close"] .cursor-dot::before {
+  scale: 0;
+  opacity: 0;
+}
+
+.cursor[data-state="hint"] .cursor-icon--scroll,
+.cursor[data-state="play"] .cursor-icon--play,
+.cursor[data-state="video-play"] .cursor-icon--play,
+.cursor[data-state="video-pause"] .cursor-icon--pause,
+.cursor[data-state="close"] .cursor-icon--close {
+  opacity: 1;
+  scale: 1;
+}
+
+/* The tag naming whatever tile is under the pointer. What it looks like is
+ * the small `.pill` (see above) — the same component as the video title; only
+ * its placement and its show/hide are here. Positioned by Cursor.tsx on the
+ * outer element; the inner one keeps the show/hide scale to itself. */
+.cursor-tag-text {
+  position: absolute;
+  top: 0;
+  left: 0;
+  opacity: 0;
+  scale: 0.85;
+  transition:
+    opacity 0.2s ease,
+    scale 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.cursor[data-tag="true"] .cursor-tag-text {
+  opacity: 1;
+  scale: 1;
+}
+
+/* The ring a click lets go of. Invisible at rest; Cursor.tsx plays it with
+ * the Web Animations API from wherever the click landed. */
+.cursor-pulse {
+  width: 34px;
+  height: 34px;
+  margin: -17px 0 0 -17px;
+  border: 1px solid rgb(255 255 255 / 0.8);
+  border-radius: 50%;
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cursor-shape {
+    animation: none;
+  }
+}
+
+/* ── Magnetic tiles ────────────────────────────────────────────────────────
+ * Cursor.tsx writes --mx / --my on whichever tile the pointer is over. Taken
+ * through `translate`, not `transform`, so it composes with anything a
+ * utility class puts on the same element. The icon inside travels half as far
+ * again as its tile, which is all the depth a 36px square needs.
+ */
+[data-magnetic] {
+  translate: var(--mx, 0px) var(--my, 0px);
+}
+
+[data-magnetic] > img {
+  translate: calc(var(--mx, 0px) * 0.5) calc(var(--my, 0px) * 0.5);
+}
+
+/* ── Chrome entrance ───────────────────────────────────────────────────────
+ * The overlay used to simply be there when the loader faded. Now it arrives:
+ * each piece slides in from the edge it lives on, one after another, while
+ * the cards behind are still condensing out of their clouds.
+ *
+ * CarouselExperience sets `data-revealed` on <html> at the moment the loader
+ * starts to lift. Nothing is hidden before that — the loader is opaque and on
+ * top — so a page whose script never runs loses nothing. `backwards` holds
+ * the first keyframe through the stagger delay; there is deliberately no `to`
+ * keyframe and no `forwards`, so each piece lands on its own computed style
+ * and the animation then lets go of it entirely — which is what leaves
+ * `translate` free for the magnetic rule above.
+ */
+@keyframes chrome-enter {
+  from {
+    opacity: 0;
+    translate: var(--enter-x, 0px) var(--enter-y, 0px);
+  }
+}
+
+[data-enter="left"] {
+  --enter-x: -14px;
+}
+
+[data-enter="right"] {
+  --enter-x: 14px;
+}
+
+[data-enter="up"] {
+  --enter-y: 12px;
+}
+
+[data-enter="down"] {
+  --enter-y: -12px;
+}
+
+html[data-revealed] [data-enter] {
+  animation: chrome-enter 0.8s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  animation-delay: calc(200ms + var(--i, 0) * 70ms);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-revealed] [data-enter] {
+    animation: none;
+  }
+}
+
+/* ── Scrub HUD ─────────────────────────────────────────────────────────────
+ * Built in app/components/scrub-hud.ts and driven from the spiral's loop.
+ * Top-right, level with the middle of the wordmark opposite it.
+ */
+.scrub-hud {
+  position: absolute;
+  top: 28px;
+  right: 16px;
+  /* Over the cloud bank (2), inside the carousel host's own stacking context. */
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  pointer-events: none;
+  user-select: none;
+  -webkit-user-select: none;
+  font-family: var(--font-geist-mono), ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+  color: rgb(255 255 255 / 0.9);
+}
+
+.scrub-ruler {
+  position: relative;
+  width: 120px;
+  height: 16px;
+  overflow: hidden;
+  /* The ruler has no ends: it fades out either side of the playhead. */
+  mask-image: linear-gradient(
+    90deg,
+    transparent,
+    #000 32%,
+    #000 68%,
+    transparent
+  );
+}
+
+/* One period (40px, CLIP_PX in scrub-hud.ts) wider than its window, so the
+ * strip can slide a whole clip and snap back unseen. Two layers of 1px ticks
+ * standing on the baseline: a long one per clip, a short one every fifth of
+ * the way between. Both are offset so that at rest a long tick sits exactly
+ * under the playhead in the middle of the 120px window (60 = 20 + 40). */
+.scrub-ticks {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 160px;
+  will-change: transform;
+  background-image:
+    linear-gradient(90deg, rgb(255 255 255 / 0.9) 1px, transparent 1px),
+    linear-gradient(90deg, rgb(255 255 255 / 0.4) 1px, transparent 1px);
+  background-size:
+    40px 9px,
+    8px 4px;
+  background-position:
+    20px 100%,
+    4px 100%;
+  background-repeat: repeat-x;
+}
+
+.scrub-playhead {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 60px;
+  width: 1px;
+  background: #fff;
+}
+
+/* The playhead's cap, the small downward wedge every timeline has. */
+.scrub-playhead::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: -3px;
+  width: 7px;
+  height: 5px;
+  background: #fff;
+  clip-path: polygon(0 0, 100% 0, 50% 100%);
+}
+
+.scrub-count {
+  white-space: nowrap;
+}
+
+.scrub-current {
+  display: inline-block;
+}
+
+.scrub-total {
+  color: rgb(255 255 255 / 0.5);
+}
+
+@media (min-width: 640px) {
+  .scrub-hud {
+    top: 44px;
+    right: 24px;
+  }
+}
+
+/* ── Espresso mode ─────────────────────────────────────────────────────────
+ * See lib/espresso.ts. The page's black becomes espresso and the haze becomes
+ * crema, poured over a second rather than switched.
+ *
+ * Both colours are registered so they can transition: an unregistered custom
+ * property is a string to the browser and can only jump. Registering --brand
+ * changes nothing else about it — every use of it already expects a colour.
+ * --puff is the cloud banks' tint (see .cloud-puffs); the WebGL clouds on the
+ * cards follow the same switch from SpiralCarousel.
+ */
+@property --brand {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: #000000;
+}
+
+@property --puff {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: rgb(214 229 255);
+}
+
+:root {
+  --puff: rgb(214 229 255);
+  transition:
+    --brand 1.2s ease,
+    --puff 1.2s ease;
+}
+
+html[data-espresso] {
+  --brand: #1e130c;
+  --puff: rgb(240 214 178);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    transition: none;
+  }
+}
+
+/* The word "café" in the bio (CoffeeWord in HeroBio). It reads as the word it
+ * was — same font, same colour — with a dotted underline to say it can be
+ * pressed, and a wisp of steam over it to say why. Pointer events are taken
+ * back here because the bio around it hands them to the canvas on desktop. */
+.coffee-word {
+  position: relative;
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
+  pointer-events: auto;
+  cursor: pointer;
+  text-decoration: underline dotted rgb(255 255 255 / 0.45);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  transition: text-decoration-color 0.2s ease;
+}
+
+.coffee-word:hover,
+.coffee-word[aria-pressed="true"] {
+  text-decoration-color: #fff;
+}
+
+.coffee-word:focus-visible {
+  outline: 1px solid rgb(255 255 255 / 0.6);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* Three wisps of steam rising off the word on staggered loops. They start
+ * from the top of the letters and climb into the gap above, thinning out
+ * before they reach the line over it, so the text stays readable. */
+.coffee-steam {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% - 5px);
+  width: 20px;
+  height: 18px;
+  translate: -50% 0;
+  overflow: visible;
+  pointer-events: none;
+  fill: none;
+  stroke: #fff;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+}
+
+.coffee-steam path {
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: coffee-steam 2.6s ease-out infinite;
+}
+
+.coffee-steam path:nth-child(2) {
+  animation-delay: 0.85s;
+}
+
+.coffee-steam path:nth-child(3) {
+  animation-delay: 1.7s;
+}
+
+@keyframes coffee-steam {
+  0% {
+    opacity: 0;
+    translate: 0 4px;
+    scale: 1 0.5;
+  }
+  35% {
+    opacity: 0.75;
+  }
+  100% {
+    opacity: 0;
+    translate: 1px -6px;
+    scale: 1.15 1;
+  }
+}
+
+/* Poured: the steam comes faster while the mode is on. */
+.coffee-word[aria-pressed="true"] .coffee-steam path {
+  animation-duration: 1.8s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .coffee-steam {
+    display: none;
+  }
+}
+
+/* Over the word, the cursor's cell becomes a cup — on a crema disc, the same
+ * size as the lightbox's marks. Its steam rises in a loop of its own. */
+.cursor[data-state="coffee"] .cursor-shape {
+  width: 52px;
+  height: 52px;
+  border-color: rgb(240 214 178);
+  background: rgb(240 214 178);
+}
+
+.cursor[data-state="coffee"] .cursor-dot::before {
+  scale: 0;
+  opacity: 0;
+}
+
+.cursor[data-state="coffee"] .cursor-icon--coffee {
+  opacity: 1;
+  scale: 1;
+  color: #3b2414;
+}
+
+.cursor-steam,
+.cup-steam {
+  animation: cursor-steam 1.6s ease-in-out infinite;
+}
+
+.cursor-steam + .cursor-steam,
+.cup-steam + .cup-steam {
+  animation-delay: 0.5s;
+}
+
+@keyframes cursor-steam {
+  0%,
+  100% {
+    opacity: 0.25;
+    translate: 0 1px;
+  }
+  50% {
+    opacity: 1;
+    translate: 0 -1px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cursor-steam,
+  .cup-steam {
+    animation: none;
+  }
+}
+
+/* The pills CoffeeMode puts up: the confirmation of an espresso switch, and
+ * the coffee break, which stays until the visitor is back. The same `.pill`
+ * as the video title; it drops in from the top, centred, under the wordmark's
+ * row on a phone and level with it from `sm` up. Pointer-inert, and above the
+ * lightbox, since "cafe" can be typed with a video open. */
+.coffee-toast-slot {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 76px);
+  left: 50%;
+  z-index: 60;
+  translate: -50% 0;
+  pointer-events: none;
+}
+
+.coffee-toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  animation: coffee-toast-in 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  transition:
+    opacity 0.3s ease,
+    translate 0.3s ease;
+}
+
+.coffee-toast[data-leaving] {
+  opacity: 0;
+  translate: 0 -4px;
+}
+
+@keyframes coffee-toast-in {
+  from {
+    opacity: 0;
+    translate: 0 -8px;
+  }
+}
+
+/* The break's cup, steaming on the same loop as the cursor's. Pulled up a
+ * touch so the cup, not its steam, sits on the text's centre line. */
+.coffee-toast-cup {
+  width: 18px;
+  height: 18px;
+  margin: -3px 0 0 -4px;
+  color: #3b2414;
+}
+
+@media (min-width: 640px) {
+  .coffee-toast-slot {
+    top: 36px;
+  }
+}
+
+/* Without motion the pill still fades — a pill popping in is harsher than
+ * one appearing — but it no longer travels. */
+@media (prefers-reduced-motion: reduce) {
+  .coffee-toast {
+    animation-name: coffee-toast-fade;
+  }
+
+  .coffee-toast[data-leaving] {
+    translate: none;
+  }
+
+  @keyframes coffee-toast-fade {
+    from {
+      opacity: 0;
+    }
   }
 }

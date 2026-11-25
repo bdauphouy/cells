@@ -9,6 +9,12 @@ uniform float uZoom;
 uniform float uReveal;
 uniform float uOpacity;
 uniform float uHighlight;
+/* Where the pointer is on the hovered card, in the plane's uv. See the glint
+ * near the end of main(). */
+uniform vec2 uPointer;
+/* Cards per frame, signed — the same number the vertex stage smears the
+ * geometry with. Here it pulls the colour channels apart. */
+uniform float uScrollSpeed;
 uniform float uFog; // 0 in clear air, 1 lost in the cloud bank
 uniform float uFogDir; // +1 leaving through the top, -1 through the bottom
 uniform vec3 uFogColor;
@@ -152,6 +158,23 @@ void main() {
     if (gl_FrontFacing) {
       color = texture2D(uTexture, zoomedUv);
 
+#ifndef LOW_QUALITY
+      /* Thrown hard, the footage comes apart into its channels along the
+       * direction of travel — red leading, blue trailing — the way a fast
+       * whip-pan does on a cheap sensor. It only opens up well above the idle
+       * drift and a gentle scroll, so a card anyone is actually looking at is
+       * never fringed; it is a property of the flick, gone the moment the
+       * strip slows. Two extra taps, behind a branch that is coherent across
+       * the draw call, and not paid at all where fill rate is scarce.
+       */
+      float rush = smoothstep(0.02, 0.16, abs(uScrollSpeed));
+      if (rush > 0.0) {
+        vec2 split = vec2(0.0, sign(uScrollSpeed) * rush * 0.012);
+        color.r = texture2D(uTexture, zoomedUv + split).r;
+        color.b = texture2D(uTexture, zoomedUv - split).b;
+      }
+#endif
+
       // Haze in front of the card scatters it before it hides it, so the
       // picture goes out of focus on the way into the bank. The card is being
       // drained of colour and pulled apart by the same fog, so the two-tap
@@ -256,7 +279,18 @@ void main() {
 
   alpha *= smoothstep(0.0, 0.6, uReveal) * uOpacity;
 
-  vec3 rgb = color.rgb * vShade * (1.0 + uHighlight * 0.35);
+  /* Hover light. Part of it lifts the whole card, as it always did; the rest
+   * is a soft pool around the pointer itself, so moving across a reel sweeps a
+   * glint over it — the same flashlight that picks the grid out behind the
+   * cards, now landing on them too. Measured in card heights (world size over
+   * uUnit), so the pool is round and the same size on every shape of card.
+   */
+  float glint = 0.0;
+  if (uHighlight > 0.001) {
+    vec2 g = (vUv - uPointer) * uPlaneSizes * uSwell / uUnit;
+    glint = 1.0 - smoothstep(0.0, 0.6, length(g));
+  }
+  vec3 rgb = color.rgb * vShade * (1.0 + uHighlight * (0.16 + 0.34 * glint));
 
   if (form > 0.002) {
     /* Cloud light. A cumulus is near-white along the top of every billow and

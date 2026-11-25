@@ -47,6 +47,19 @@ export default function CarouselExperience({ cards }: { cards: ResolvedCard[] })
     return () => clearTimeout(id);
   }, [reveal]);
 
+  // The overlay chrome (HeroOverlay, the wordmark, the scrub HUD) arrives on
+  // the same cue as the cards start condensing. Those are server-rendered
+  // siblings this component has no handle on, so the cue is an attribute on
+  // <html> that their `chrome-enter` animation in globals.css is keyed to.
+  useEffect(() => {
+    if (!reveal) return;
+    const root = document.documentElement;
+    root.dataset.revealed = "";
+    return () => {
+      delete root.dataset.revealed;
+    };
+  }, [reveal]);
+
   return (
     <>
       {/* `started` is the same flag as the fade, not a later one: the cards

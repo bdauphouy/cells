@@ -2,8 +2,12 @@
 
 import fragmentShader from "@/lib/shaders/card.frag.glsl";
 import vertexShader from "@/lib/shaders/card.vert.glsl";
+import gridFragmentShader from "@/lib/shaders/grid.frag.glsl";
+import gridVertexShader from "@/lib/shaders/grid.vert.glsl";
 import Hls from "hls.js";
 import { createLightboxControls } from "@/components/lightbox-controls";
+import { createScrubHud } from "@/components/scrub-hud";
+import { COFFEE_BREAK_EVENT, ESPRESSO_EVENT } from "@/lib/espresso";
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 
@@ -557,12 +561,79 @@ const ACTIVATIONS_PER_TICK = 4;
  */
 /* ── Background grid ──────────────────────────────────────────────────────
  * A faint white grid sits behind the cards at all times; a brighter patch
- * tracks the pointer, like a flashlight passing over graph paper.
+ * tracks the pointer, like a flashlight passing over graph paper. Drawn by
+ * lib/shaders/grid.frag.glsl as the first thing in the scene, so that it can
+ * be warped — see the well below.
  */
 const GRID_SIZE = 48; // px between lines
 const GRID_BASE_ALPHA = 0.08; // always-on grid line opacity, everywhere
 const GRID_SPOT_ALPHA = 0.06; // extra opacity layered on near the pointer
 const GRID_SPOT_RADIUS = 320; // px, spotlight falloff radius
+/* The grid is the far wall, and it slides as the spiral is scrubbed: the same
+ * way the cards at the front are travelling, at this share of their pace. That
+ * difference in pace is the whole effect — paper that kept up with the cards
+ * would read as stuck to them, and paper that stood still as a backdrop.
+ */
+const GRID_PARALLAX = 0.4;
+
+/* The well. The paper sags under the pointer, as if it had weight: lines are
+ * drawn straight in toward it, a little under a still mouse and much more
+ * while the strip is being scrubbed. It trails the pointer slightly, and when
+ * the pull lets go the sheet springs back flat — overshooting a touch, so it
+ * settles like a membrane rather than easing like a fade. On a touch screen
+ * it is under the finger for as long as the finger is down.
+ *
+ * The scrub's share is driven by `speed` less the idle drift, so the perpetual
+ * crawl adds nothing. GRID_WELL_SPEED is the speed at which that share is ~63%
+ * of the way in; a brisk wheel or a thumb flick gets most of the way there.
+ */
+const GRID_WELL_HOVER = 0.25; // depth under a pointer that isn't scrubbing
+const GRID_WELL_IDLE = 0.004; // cards/frame of speed ignored, above IDLE_SPEED
+const GRID_WELL_SPEED = 0.1;
+const GRID_WELL_RADIUS = 0.14; // of the canvas diagonal
+const GRID_WELL_FOLLOW = 0.2; // per-frame pull of the well toward the pointer
+// Spring toward the target. Damping ratio ~0.55: one visible rebound, then
+// still. Per 60Hz frame, like everything else in the loop.
+const GRID_WELL_STIFFNESS = 0.06;
+const GRID_WELL_DAMPING = 0.27;
+const GRID_SPOT_EASING = 0.12; // ~0.4s, what the CSS opacity transition was
+
+/* ── Coffee ────────────────────────────────────────────────────────────────
+ * Espresso mode (lib/espresso.ts) turns the clouds the cards are born from
+ * and dissolve into crema, over about the same second the CSS takes to pour
+ * the background. A coffee break (same module) lets the idle drift go, so the
+ * spiral coasts to a stop until the visitor is back.
+ */
+const CREMA = "#f0d6b2";
+const CREMA_EASING = 0.05;
+
+/* ── Look-around ───────────────────────────────────────────────────────────
+ * The camera leans a little toward the mouse, always aimed at the middle of
+ * the helix, so the near cards slide one way across the far ones and the
+ * spiral reads as the solid thing it is. World units at full deflection (the
+ * pointer in a corner); the camera sits 8 back, so this is a few degrees.
+ *
+ * Less in y than in x on purpose: the fog is keyed to a card's height on
+ * screen (see FOG_START), and a camera that rose and fell much would drag the
+ * dissolve up and down the strip with it.
+ */
+const LOOK_X = 0.5;
+const LOOK_Y = 0.18;
+const LOOK_EASING = 0.06;
+
+/* ── Keyboard ──────────────────────────────────────────────────────────────
+ * An impulse of d on targetSpeed is worth d / (1 - DECAY) cards of travel
+ * before it has decayed away, so this is one card per press.
+ */
+const KEY_NUDGE = 1 - DECAY;
+const KEY_CARDS: Record<string, number> = {
+  ArrowDown: 1,
+  ArrowRight: 1,
+  ArrowUp: -1,
+  ArrowLeft: -1,
+  PageDown: 3,
+  PageUp: -3,
+};
 
 const OPEN_MS = 600;
 const CLOSE_MS = 480;
@@ -669,6 +740,20 @@ export default function SpiralCarousel({
       new THREE.Color(0xffffff),
       0.8,
     );
+    // Every card's uFogColor holds this very object, so easing it in place
+    // recolours every cloud at once; these are the two ends it eases between.
+    const fogPlain = fogColor.clone();
+    const fogCrema = new THREE.Color(CREMA);
+    let fogTarget = fogPlain;
+    const onEspresso = (e: Event) => {
+      fogTarget = (e as CustomEvent<boolean>).detail ? fogCrema : fogPlain;
+    };
+    window.addEventListener(ESPRESSO_EVENT, onEspresso);
+    let onBreak = false;
+    const onCoffeeBreak = (e: Event) => {
+      onBreak = (e as CustomEvent<boolean>).detail;
+    };
+    window.addEventListener(COFFEE_BREAK_EVENT, onCoffeeBreak);
 
     /* Device class, fixed for the life of the mount. A phone doesn't stop
      * being a phone on rotation, and the two things keyed off this — the
@@ -679,6 +764,9 @@ export default function SpiralCarousel({
      */
     const touchOnly = window.matchMedia("(hover: none)").matches;
     const lowPower = touchOnly || window.innerWidth < MOBILE_WIDTH;
+    const reducedMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
 
     const renderer = new THREE.WebGLRenderer({
       // The card edges are drawn by the fragment shader's own signed-distance
@@ -693,28 +781,20 @@ export default function SpiralCarousel({
     canvas.style.cssText =
       "position:absolute;inset:0;z-index:1;display:block;width:100%;height:100%";
 
-    const gridLines = (alpha: number) =>
-      `linear-gradient(rgba(255,255,255,${alpha}) 1px, transparent 1px),` +
-      `linear-gradient(90deg, rgba(255,255,255,${alpha}) 1px, transparent 1px)`;
-    const gridBase = document.createElement("div");
-    gridBase.style.cssText = `position:absolute;inset:0;z-index:0;pointer-events:none;background-image:${gridLines(GRID_BASE_ALPHA)};background-size:${GRID_SIZE}px ${GRID_SIZE}px;`;
-    // The spotlight follows a pointer that a touch device doesn't have. It
-    // costs a full-viewport masked repaint per pointer event, so on touch it
-    // is never created rather than sitting at 0 opacity waiting for one.
-    const gridSpot = touchOnly ? null : document.createElement("div");
-    if (gridSpot)
-      gridSpot.style.cssText = `position:absolute;inset:0;z-index:0;pointer-events:none;opacity:0;transition:opacity 0.4s ease;background-image:${gridLines(GRID_SPOT_ALPHA)};background-size:${GRID_SIZE}px ${GRID_SIZE}px;`;
-    host.appendChild(gridBase);
-    if (gridSpot) host.appendChild(gridSpot);
     host.appendChild(canvas);
 
     // Hovered card's title, as a fixed pill anchored to the bottom of the
     // page rather than tracking the card — the card is mid-spiral, curling
     // and dissolving, so anchoring text to it would fight the motion instead
     // of reading calmly.
+    //
+    // What it looks like is `.pill` in globals.css, shared with the tag the
+    // custom cursor carries; only where it sits, how it appears and how it
+    // truncates a long title are set here.
     const titleLabel = document.createElement("div");
+    titleLabel.className = "pill";
     titleLabel.style.cssText =
-      "position:fixed;z-index:30;left:50%;bottom:32px;pointer-events:none;background:#fff;color:#111;font-size:13px;font-weight:500;letter-spacing:0.01em;padding:10px 20px;border-radius:9999px;opacity:0;transform:translate(-50%,6px);transition:opacity 0.25s ease,transform 0.25s ease;white-space:nowrap;max-width:80vw;overflow:hidden;text-overflow:ellipsis;";
+      "position:fixed;z-index:30;left:50%;bottom:32px;pointer-events:none;opacity:0;transform:translate(-50%,6px);transition:opacity 0.25s ease,transform 0.25s ease;max-width:80vw;overflow:hidden;text-overflow:ellipsis;";
     document.body.appendChild(titleLabel);
 
     // Vapour over both ends of the spiral. Two layers per bank, drifting at
@@ -735,7 +815,48 @@ export default function SpiralCarousel({
       return bank;
     });
 
+    // The timeline ruler and clip counter in the top-right corner; see
+    // scrub-hud.ts. Nothing to count in an empty library.
+    const hud = videos.length > 0 ? createScrubHud(videos.length) : null;
+    if (hud) host.appendChild(hud.el);
+
     const scene = new THREE.Scene();
+
+    /* The grid, as the scene's backdrop: a screen-filling quad drawn before
+     * any card (renderOrder, no depth), so the cards composite over it exactly
+     * as the canvas used to composite over the CSS sheets it replaces. It used
+     * to be two of those sheets, slid with a transform — fine until the paper
+     * had to bend, which only a shader can do. Uniforms are filled in by
+     * resize() and the loop. */
+    const gridMaterial = new THREE.ShaderMaterial({
+      vertexShader: gridVertexShader,
+      fragmentShader: gridFragmentShader,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      uniforms: {
+        uResolution: { value: new THREE.Vector2(1, 1) },
+        uPixelRatio: { value: 1 },
+        uGridSize: { value: GRID_SIZE },
+        uShift: { value: 0 },
+        uBaseAlpha: { value: GRID_BASE_ALPHA },
+        uSpotAlpha: { value: GRID_SPOT_ALPHA },
+        uSpotRadius: { value: GRID_SPOT_RADIUS },
+        uPointer: { value: new THREE.Vector2(-1e4, -1e4) },
+        uSpot: { value: 0 },
+        uCenter: { value: new THREE.Vector2(0, 0) },
+        uRadius: { value: 1 },
+        uPinch: { value: 0 },
+      },
+    });
+    const gridMesh = new THREE.Mesh(
+      new THREE.PlaneGeometry(2, 2),
+      gridMaterial,
+    );
+    gridMesh.frustumCulled = false; // it is placed in clip space, not the scene
+    gridMesh.renderOrder = -1;
+    scene.add(gridMesh);
+    const gu = gridMaterial.uniforms;
     const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
     camera.position.set(0, 0, CAMERA_Z);
     // The loop projects card centres before the first render, which is what
@@ -868,6 +989,7 @@ export default function SpiralCarousel({
     let maxSpeed = MAX_SPEED;
     let viewportActivate = VIEWPORT_ACTIVATE;
     let viewportDeactivate = VIEWPORT_DEACTIVATE;
+    let gridStep = 0;
 
     /* Where each position along the strip sits round the orbit. With mixed
      * shapes the spacing is no longer one constant (see cardGap), so the angle
@@ -926,6 +1048,11 @@ export default function SpiralCarousel({
           uReveal: { value: 0 },
           uOpacity: { value: 1 },
           uHighlight: { value: 0 },
+          // Where on this card the pointer is, in the plane's own uv — the
+          // centre of the glint in card.frag.glsl. Per card, and only written
+          // while the card is the hovered one, so the glint fades out where
+          // the pointer left it rather than snapping somewhere else first.
+          uPointer: { value: new THREE.Vector2(0.5, 0.5) },
           uFog: { value: 0 },
           uSwell: { value: 1 + FOG_SWELL * cardMedia.swellScale },
           uFogDir: { value: 1 },
@@ -1047,6 +1174,9 @@ export default function SpiralCarousel({
     const backdrop = document.createElement("div");
     backdrop.style.cssText =
       "position:fixed;inset:0;z-index:40;background:rgba(0,0,0,0);display:none;transition:background-color 0.5s ease;";
+    // A click out here closes the player, and nothing on screen said so until
+    // the pointer did; see Cursor.tsx for what these attributes mean.
+    backdrop.dataset.cursor = "close";
     const fsVideo = document.createElement("video");
     /* No native controls: every browser draws its own, they can't be styled,
      * and on iOS they sit in a layer above the page that wins any overlap with
@@ -1089,6 +1219,7 @@ export default function SpiralCarousel({
     // .lightbox-close, which is the HeroOverlay tile at a breakpoint-dependent
     // size. What stays here is only what the open and close animations drive.
     closeBtn.className = "lightbox-close";
+    closeBtn.dataset.cursorLabel = "Esc";
     closeBtn.style.cssText = "display:none;opacity:0;pointer-events:none;";
 
     /* Title + description for the open video, in the bottom-left dock over
@@ -1234,6 +1365,8 @@ export default function SpiralCarousel({
     const openVideo = (card: Card) => {
       if (openCard) return;
       openCard = card;
+      // Someone watching a clip is not idle; see CoffeeMode's break timer.
+      document.documentElement.dataset.lightbox = "";
       mediaOpacity = 1;
       frozen = true;
 
@@ -1359,6 +1492,7 @@ export default function SpiralCarousel({
         closeBtn.style.display = "none";
         dock.style.display = "none";
         openCard = null;
+        delete document.documentElement.dataset.lightbox;
         frozen = false;
       }, CLOSE_MS);
     };
@@ -1366,7 +1500,19 @@ export default function SpiralCarousel({
     closeBtn.addEventListener("click", closeVideo);
     backdrop.addEventListener("click", closeVideo);
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeVideo();
+      if (e.key === "Escape") {
+        closeVideo();
+        return;
+      }
+      // The arrows scrub the spiral a card at a time. Not with the lightbox
+      // open — there the same keys belong to the player (see onKeyDown in
+      // lightbox-controls) — and not with a modifier held, which is the
+      // browser's own shortcut for something else.
+      if (openCard || e.metaKey || e.ctrlKey || e.altKey) return;
+      const steps = KEY_CARDS[e.key];
+      if (!steps) return;
+      e.preventDefault();
+      push(steps * KEY_NUDGE);
     };
     window.addEventListener("keydown", onKeyDown);
 
@@ -1385,6 +1531,9 @@ export default function SpiralCarousel({
       camera.aspect = w / h;
       camera.fov = mobile ? 45 : 35;
       camera.position.z = mobile ? CAMERA_Z_MOBILE : CAMERA_Z;
+      // The look-around may have the camera off-axis; its aim was taken at
+      // the old distance.
+      camera.lookAt(0, 0, 0);
       camera.updateProjectionMatrix();
       camera.updateMatrixWorld();
 
@@ -1406,6 +1555,16 @@ export default function SpiralCarousel({
       viewportDeactivate = mobile
         ? VIEWPORT_DEACTIVATE_MOBILE
         : VIEWPORT_DEACTIVATE;
+      // Screen px the grid slides per card of travel: the height one card's
+      // climb covers at the middle of the helix, scaled by GRID_PARALLAX.
+      const worldHeight =
+        2 *
+        camera.position.z *
+        Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+      gridStep = ((verticalGap * h) / worldHeight) * GRID_PARALLAX;
+      gu.uResolution.value.set(w, h);
+      gu.uPixelRatio.value = renderer.getPixelRatio();
+      gu.uRadius.value = GRID_WELL_RADIUS * Math.hypot(w, h);
 
       canvasRect = canvas.getBoundingClientRect();
       // Keep the open player filling the viewport through a resize; snap
@@ -1434,9 +1593,32 @@ export default function SpiralCarousel({
     let downY = 0;
     let downTime = 0;
     const pointer = new THREE.Vector2(2, 2); // parked off-screen until a move
+    // Whether the visitor has spun the spiral yet. Until they have, the
+    // custom cursor shows a scroll hint over the canvas; every call to push
+    // comes from a wheel, a drag or a key, so that is where it is retired.
+    let interacted = false;
+    // Where the camera is leaning, and where it is being asked to; both in
+    // [-1, 1] across the window. See LOOK_X.
+    let lookX = 0;
+    let lookY = 0;
+    let lookTargetX = 0;
+    let lookTargetY = 0;
+    // The grid's spotlight and its well, each a value and where it is headed;
+    // the well also carries a velocity, since it is a spring.
+    let spotTarget = 0;
+    let pinch = 0;
+    let pinchVel = 0;
+    // Where the well sits (trailing), where the pointer is, and whether
+    // there is a pointer to sag under at all. css px, canvas-relative.
+    let wellX = 0;
+    let wellY = 0;
+    let wellTargetX = 0;
+    let wellTargetY = 0;
+    let wellPresent = false;
 
     const push = (delta: number) => {
       if (delta === 0) return;
+      interacted = true;
       targetSpeed = THREE.MathUtils.clamp(
         targetSpeed + delta,
         -maxSpeed,
@@ -1477,12 +1659,13 @@ export default function SpiralCarousel({
        */
       if (e.pointerType === "mouse") {
         setPointerFrom(e);
-        if (gridSpot) {
-          const mask = `radial-gradient(circle ${GRID_SPOT_RADIUS}px at ${e.clientX - canvasRect.left}px ${e.clientY - canvasRect.top}px, black, transparent)`;
-          gridSpot.style.maskImage = mask;
-          gridSpot.style.webkitMaskImage = mask;
-          gridSpot.style.opacity = "1";
-        }
+        // The spotlight follows a pointer a touch device doesn't have, so a
+        // finger never lights it.
+        gu.uPointer.value.set(
+          e.clientX - canvasRect.left,
+          e.clientY - canvasRect.top,
+        );
+        spotTarget = 1;
       }
       if (!dragging) return;
       push(-(e.clientY - lastPointerY) * dragSens);
@@ -1507,8 +1690,60 @@ export default function SpiralCarousel({
     };
     const onPointerLeave = () => {
       parkPointer();
-      if (gridSpot) gridSpot.style.opacity = "0";
+      spotTarget = 0;
     };
+    /* The look-around listens on the window, unlike everything above: the
+     * overlay tiles sit on top of the canvas, and a camera that swung back to
+     * centre every time the pointer crossed one would be a twitch. Leaving the
+     * window does recentre it — there is no pointer left to lean toward.
+     */
+    const onLookMove = (e: PointerEvent) => {
+      if (e.pointerType !== "mouse") return;
+      lookTargetX = (e.clientX / window.innerWidth) * 2 - 1;
+      lookTargetY = 1 - (e.clientY / window.innerHeight) * 2;
+    };
+    const onLookLeave = () => {
+      lookTargetX = 0;
+      lookTargetY = 0;
+    };
+    /* The well's pointer, on the window for the same reason: the overlay
+     * tiles are over the canvas, and the paper should not spring flat every
+     * time the pointer crosses one. A mouse is always somewhere; a finger only
+     * counts while it is down. */
+    const placeWell = (e: PointerEvent) => {
+      wellTargetX = e.clientX - canvasRect.left;
+      wellTargetY = e.clientY - canvasRect.top;
+      // Arriving from nowhere, the well appears where the pointer is rather
+      // than sliding over from wherever it was last.
+      if (!wellPresent && pinch < 0.02) {
+        wellX = wellTargetX;
+        wellY = wellTargetY;
+      }
+      wellPresent = true;
+    };
+    const onWellMove = (e: PointerEvent) => {
+      if (e.pointerType === "mouse" || wellPresent) placeWell(e);
+    };
+    const onWellDown = (e: PointerEvent) => {
+      if (e.pointerType !== "mouse") placeWell(e);
+    };
+    const onWellUp = (e: PointerEvent) => {
+      if (e.pointerType !== "mouse") wellPresent = false;
+    };
+    const onWellLeave = () => {
+      wellPresent = false;
+    };
+    window.addEventListener("pointermove", onWellMove, { passive: true });
+    window.addEventListener("pointerdown", onWellDown, { passive: true });
+    window.addEventListener("pointerup", onWellUp, { passive: true });
+    window.addEventListener("pointercancel", onWellUp, { passive: true });
+    document.documentElement.addEventListener("mouseleave", onWellLeave);
+
+    const lookAround = !touchOnly && !reducedMotion;
+    if (lookAround) {
+      window.addEventListener("pointermove", onLookMove, { passive: true });
+      document.documentElement.addEventListener("mouseleave", onLookLeave);
+    }
 
     canvas.addEventListener("wheel", onWheel, { passive: true });
     canvas.addEventListener("pointerdown", onPointerDown);
@@ -1534,6 +1769,7 @@ export default function SpiralCarousel({
     // wait is over.
     let firstFrame = true;
     let cursor = ""; // last value written to canvas.style.cursor
+    let cursorZone = ""; // ...and to canvas.dataset.cursor, for Cursor.tsx
     let titleShown = false; // ...and to the title pill, so neither is rewritten
     // Scratch for the live-stream reconciliation, reused rather than
     // reallocated: it runs several times a second, forever.
@@ -1552,10 +1788,77 @@ export default function SpiralCarousel({
       if (!frozen) {
         speed += (targetSpeed - speed) * (1 - Math.pow(1 - EASING, step));
         offset += speed * step;
-        if (Math.abs(targetSpeed) < IDLE_SPEED)
-          targetSpeed = direction * IDLE_SPEED;
+        // On a coffee break there is no floor, and the strip coasts to rest.
+        const idle = onBreak ? 0 : IDLE_SPEED;
+        if (Math.abs(targetSpeed) < idle) targetSpeed = direction * idle;
         targetSpeed *= Math.pow(DECAY, step);
+
+        /* Lean toward the pointer. Frozen along with the spiral: the lightbox
+         * grows out of the card's on-screen rect and shrinks back onto it, and
+         * that rect has to be where it was when the player comes home. Written
+         * only while it is actually moving, so a still mouse costs nothing —
+         * the easing stops short of its target by under a ten-thousandth,
+         * which is nothing on screen.
+         */
+        const lean = 1 - Math.pow(1 - LOOK_EASING, step);
+        const nextX = lookX + (lookTargetX - lookX) * lean;
+        const nextY = lookY + (lookTargetY - lookY) * lean;
+        if (Math.abs(nextX - lookX) > 1e-4 || Math.abs(nextY - lookY) > 1e-4) {
+          lookX = nextX;
+          lookY = nextY;
+          camera.position.x = lookX * LOOK_X;
+          camera.position.y = lookY * LOOK_Y;
+          camera.lookAt(0, 0, 0);
+          // The loop projects card centres before the render that would
+          // otherwise refresh this.
+          camera.updateMatrixWorld();
+        }
       }
+
+      /* ── Grid ──
+       * Cards sink as `offset` grows, so the grid does too. Wrapped to one
+       * cell here rather than in the shader: the pattern repeats every cell
+       * anyway, and `offset` grows without bound, which a float uniform would
+       * eventually stop resolving to the pixel. */
+      gu.uShift.value =
+        (((offset * gridStep) % GRID_SIZE) + GRID_SIZE) % GRID_SIZE;
+      gu.uSpot.value +=
+        (spotTarget - gu.uSpot.value) *
+        (1 - Math.pow(1 - GRID_SPOT_EASING, step));
+
+      /* The well's spring. Its target is a shallow sag wherever there is a
+       * pointer, deepened by the strip's speed above the idle crawl — in
+       * either direction, since the well has no handedness — and nothing
+       * once the pointer has gone. Integrated in small steps (semi-implicit
+       * Euler): a long frame taken in one go can kick a stiff spring into
+       * oscillating harder rather than settling. */
+      const rush =
+        1 -
+        Math.exp(
+          -Math.max(Math.abs(speed) - IDLE_SPEED - GRID_WELL_IDLE, 0) /
+            GRID_WELL_SPEED,
+        );
+      const sag =
+        reducedMotion || !wellPresent
+          ? 0
+          : GRID_WELL_HOVER + (1 - GRID_WELL_HOVER) * rush;
+      for (let left = step; left > 0; left -= 1) {
+        const h = Math.min(left, 1);
+        pinchVel +=
+          ((sag - pinch) * GRID_WELL_STIFFNESS - pinchVel * GRID_WELL_DAMPING) *
+          h;
+        pinch += pinchVel * h;
+      }
+      gu.uPinch.value = pinch;
+
+      // Espresso mode's crema, poured into the clouds over about a second.
+      if (fogColor.equals(fogTarget) === false)
+        fogColor.lerp(fogTarget, 1 - Math.pow(1 - CREMA_EASING, step));
+      // Under the pointer, trailing it a little, like something with weight.
+      const follow = 1 - Math.pow(1 - GRID_WELL_FOLLOW, step);
+      wellX += (wellTargetX - wellX) * follow;
+      wellY += (wellTargetY - wellY) * follow;
+      gu.uCenter.value.set(wellX, wellY);
 
       // The helix moves under a still pointer, so this has to re-run every
       // frame; it stays cheap because three rejects most meshes on their
@@ -1564,13 +1867,21 @@ export default function SpiralCarousel({
       const canHover =
         !dragging && !frozen && pointer.x >= -1 && pointer.x <= 1;
       let hovered: THREE.Object3D | undefined;
+      let hoverUv: THREE.Vector2 | undefined;
       if (canHover) {
         raycaster.setFromCamera(pointer, camera);
-        hovered = raycaster.intersectObjects(meshes)[0]?.object;
+        const hit = raycaster.intersectObjects(meshes)[0];
+        hovered = hit?.object;
+        hoverUv = hit?.uv;
       }
       const hoveredCard = hovered
         ? cards.find((c) => c.mesh === hovered)
         : undefined;
+      // The ray is cast against the flat, unswollen plane, which is what a
+      // settled card is — and a card that isn't settled isn't lit (uHighlight
+      // rides on the same hover) for long enough to tell the difference.
+      if (hoveredCard && hoverUv)
+        hoveredCard.mesh.material.uniforms.uPointer.value.copy(hoverUv);
 
       // Written on change only: a style write on a canvas every frame is a
       // style recalculation the compositor did not need.
@@ -1709,6 +2020,25 @@ export default function SpiralCarousel({
       }
       if (showTitle) titleLabel.textContent = hoveredCard!.media.title;
 
+      // What the custom cursor should be over the canvas. "play" rides on the
+      // same test as the title: a cell that swells into a play button over a
+      // puff of vapour is labelling a cloud just as surely as the pill would.
+      const wantZone = dragging
+        ? "grabbing"
+        : showTitle
+          ? "play"
+          : interacted
+            ? "grab"
+            : "hint";
+      if (wantZone !== cursorZone) {
+        cursorZone = wantZone;
+        canvas.dataset.cursor = cursorZone;
+      }
+
+      // The clip passing the front of the orbit is the one in the middle of
+      // the strip — the same position `centreTurn` is measured from.
+      hud?.update(offset + (cardCount - 1) / 2);
+
       reconcileStreams(candidates);
       candidates.length = 0;
 
@@ -1826,6 +2156,16 @@ export default function SpiralCarousel({
       canvas.removeEventListener("pointerup", endDrag);
       canvas.removeEventListener("pointercancel", endDrag);
       canvas.removeEventListener("pointerleave", onPointerLeave);
+      window.removeEventListener("pointermove", onWellMove);
+      window.removeEventListener("pointerdown", onWellDown);
+      window.removeEventListener("pointerup", onWellUp);
+      window.removeEventListener("pointercancel", onWellUp);
+      document.documentElement.removeEventListener("mouseleave", onWellLeave);
+      if (lookAround) {
+        window.removeEventListener("pointermove", onLookMove);
+        document.documentElement.removeEventListener("mouseleave", onLookLeave);
+      }
+      hud?.destroy();
       closeBtn.removeEventListener("click", closeVideo);
       backdrop.removeEventListener("click", closeVideo);
       fsHls?.destroy();
@@ -1844,9 +2184,12 @@ export default function SpiralCarousel({
       for (const clip of media) clip.posterTexture.dispose();
       for (const geometry of geometries.values()) geometry.dispose();
       renderer.dispose();
+      window.removeEventListener(ESPRESSO_EVENT, onEspresso);
+      window.removeEventListener(COFFEE_BREAK_EVENT, onCoffeeBreak);
+      delete document.documentElement.dataset.lightbox;
+      gridMesh.geometry.dispose();
+      gridMaterial.dispose();
       canvas.remove();
-      gridBase.remove();
-      gridSpot?.remove();
       for (const bank of banks) bank.remove();
     };
   }, [videos]);

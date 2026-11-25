@@ -140,6 +140,19 @@ export function createLightboxControls(
     visible = v;
     chrome.classList.toggle("is-idle", !v);
     video.style.cursor = v ? "" : "none";
+    syncCursor();
+  };
+
+  /* What the custom cursor (Cursor.tsx) shows over the picture: the thing a
+   * click there will do, or nothing at all once the chrome has gone idle —
+   * the same rule as the native pointer on the line above, which this stands
+   * in for wherever the custom one is running. */
+  const syncCursor = () => {
+    video.dataset.cursor = !visible
+      ? "hidden"
+      : video.paused || video.ended
+        ? "video-play"
+        : "video-pause";
   };
 
   const mustStayVisible = () => video.paused || scrubbing || overBar;
@@ -160,6 +173,7 @@ export function createLightboxControls(
     const playing = scrubbing ? wasPlaying : !video.paused && !video.ended;
     playBtn.innerHTML = playing ? ICON_PAUSE : ICON_PLAY;
     playBtn.setAttribute("aria-label", playing ? "Pause" : "Play");
+    syncCursor();
   };
 
   const syncMute = () => {
@@ -429,6 +443,7 @@ export function createLightboxControls(
     window.removeEventListener("pointerdown", poke);
     window.removeEventListener("keydown", onKeyDown);
     video.style.cursor = "";
+    delete video.dataset.cursor;
     // Out of reach while the dock fades away.
     chrome.classList.add("is-idle");
     visible = false;
